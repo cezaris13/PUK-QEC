@@ -21,10 +21,14 @@ P_MIN = 1e-4
 P_MAX = 1e-2
 # Number of p values from P_MIN to P_MAX, both included, log-spaced: 9 over two decades = 4 per decade.
 NUM = 9
+# Honeycomb lattice size for `make honeycomb` drawings: 12*d^2 data qubits plus 2 spin ancillas on each of
+# the 18*d^2 edges, so 1 is 12 + 36 qubits and 2 is 48 + 144; bigger gets hard to read.
+DRAW_DISTANCE = 1
 
 RUN = results/$(NOISE)_eta$(ETA)_p$(P_MIN)-$(P_MAX)x$(NUM)_shots$(SHOTS)
 CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
 TIMESLICES = results/timeslices_d$(firstword $(DISTANCES)).png
+HONEYCOMB = results/honeycomb_d$(DRAW_DISTANCE)/layout.png
 
 venv:
 	python3 -m venv .venv
@@ -34,10 +38,17 @@ venv:
 
 timeslices: $(TIMESLICES)
 
-plots: $(TIMESLICES) $(RUN)_ler.png
+# Qubit layout, plus the 3 sub-rounds' coloured timeslices in brick-wall and regular-hexagon views.
+honeycomb: $(HONEYCOMB)
+
+plots: $(TIMESLICES) $(HONEYCOMB) $(RUN)_ler.png
 
 results/timeslices_d%.png: src/floquet.py src/plots.py
 	$(PY) src/plots.py timeslices --distance $* --rounds $* --png $@
+
+# layout.png stands in for the whole folder: the round PNGs are written alongside it.
+results/honeycomb_d%/layout.png: src/floquet.py src/plots.py
+	$(PY) src/plots.py honeycomb --distance $* --out $(@D)
 
 $(RUN)_d%.csv: src/floquet.py src/noise.py src/memory.py
 	$(PY) src/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
@@ -49,4 +60,7 @@ $(RUN)_ler.png: $(CSVS) src/plots.py
 clean:
 	rm -rf .venv
 
-.PHONY: venv timeslices plots clean
+# A rule that fails leaves no target behind, so the next make retries it instead of calling it done.
+.DELETE_ON_ERROR:
+
+.PHONY: venv timeslices honeycomb plots clean
