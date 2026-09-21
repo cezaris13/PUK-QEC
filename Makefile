@@ -24,11 +24,13 @@ NUM = 9
 # Honeycomb lattice size for `make honeycomb` drawings: 12*d^2 data qubits plus 2 spin ancillas on each of
 # the 18*d^2 edges, so 1 is 12 + 36 qubits and 2 is 48 + 144; bigger gets hard to read.
 DRAW_DISTANCE = 1
+# Set NUMBERS=1 to label every qubit in the layout drawings: Di data, Sk / Rk syndrome / reference ancilla.
+NUMBERS =
 
 RUN = results/$(NOISE)_eta$(ETA)_p$(P_MIN)-$(P_MAX)x$(NUM)_shots$(SHOTS)
 CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
 TIMESLICES = results/timeslices_d$(firstword $(DISTANCES)).png
-HONEYCOMB = results/honeycomb_d$(DRAW_DISTANCE)/layout.png
+HONEYCOMB = results/honeycomb$(if $(NUMBERS),_numbered)_d$(DRAW_DISTANCE)/layout.png
 
 venv:
 	python3 -m venv .venv
@@ -50,6 +52,10 @@ results/timeslices_d%.png: src/floquet.py src/plots.py
 results/honeycomb_d%/layout.png: src/floquet.py src/plots.py
 	$(PY) src/plots.py honeycomb --distance $* --out $(@D)
 
+# The same drawings with numbered qubits, in their own folder so neither ever passes for the other.
+results/honeycomb_numbered_d%/layout.png: src/floquet.py src/plots.py
+	$(PY) src/plots.py honeycomb --distance $* --numbers --out $(@D)
+
 $(RUN)_d%.csv: src/floquet.py src/noise.py src/memory.py
 	$(PY) src/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
 		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@
@@ -63,4 +69,4 @@ clean:
 # A rule that fails leaves no target behind, so the next make retries it instead of calling it done.
 .DELETE_ON_ERROR:
 
-.PHONY: venv timeslices honeycomb plots clean
+.PHONY: venv timeslices honeycomb plots docs clean
