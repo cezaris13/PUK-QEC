@@ -7,3 +7,4 @@ stim
 pymatching
 ipykernel
 tqdm
+cairosvg
