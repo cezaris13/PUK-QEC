@@ -1,19 +1,130 @@
 import argparse
 import csv
+import re
 from pathlib import Path
 
 import cairosvg
 import matplotlib.pyplot as plt
 
-from floquet import memory_circuit
+from floquet import (HEX_CORNERS, QUBIT_CORNERS, hex_centers, memory_circuit, period, qubit_kinds,
+                     round_circuit)
 
-# Categorical slots in fixed order, one per distance (dataviz reference palette, light mode).
+# Categorical slots in fixed order: one per distance, or per plaquette colour (dataviz reference palette).
 COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+# How each kind of qubit is drawn, as in SpinQEC's layout plots: fill and legend label. All get a dark outline.
+QUBIT_KINDS = {"data": ("#333333", "data"), "main": ("white", "ancilla: syndrome"),
+               "reff": ("#cfcfcf", "ancilla: reference")}
+
+
+def svg_png(svg: str, png: Path) -> None:
+    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(png), scale=2, background_color="white")
 
 
 def timeslices_png(distance: int, rounds: int, png: Path) -> None:
-    svg = str(memory_circuit(distance, rounds).diagram("timeslice-svg"))
-    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(png), scale=2, background_color="white")
+    svg_png(str(memory_circuit(distance, rounds).diagram("timeslice-svg")), png)
+
+
+def window(points: list[complex], torus_period: complex) -> complex:
+    """Top-left corner of the one-torus-period window centred on `points`."""
+    xs, ys = [p.real for p in points], [p.imag for p in points]
+    return complex(min(xs) - (torus_period.real - (max(xs) - min(xs))) / 2,
+                   min(ys) - (torus_period.imag - (max(ys) - min(ys))) / 2)
+
+
+def draw_layout(ax: plt.Axes, distance: int) -> None:
+    """The initial qubit layout: brick-wall plaquettes in their colour, data qubits on the corners, and on
+    every edge between them a syndrome ancilla and its reference. Shows one torus period, plaquettes wrapped
+    into it, so edges crossing the boundary still have their ancillas on a plaquette side."""
+    kinds = qubit_kinds(distance)
+    p = period(distance)
+    for c, colour in hex_centers(distance).items():
+        for shift in [a * p.real + b * p.imag * 1j for a in (-1, 0, 1) for b in (-1, 0, 1)]:
+            corners = [c + shift + d for d in QUBIT_CORNERS]
+            ax.fill([q.real for q in corners], [q.imag for q in corners], color=COLORS[colour], alpha=0.25,
+                    edgecolor="0.4")
+    for kind, (fill, label) in QUBIT_KINDS.items():
+        qs = [q for q, k in kinds.items() if k == kind]
+        ax.scatter([q.real for q in qs], [q.imag for q in qs], s=60 if kind == "data" else 36, facecolor=fill,
+                   edgecolor="#333333", linewidths=1.2, label=f"{label} ({len(qs)})")
+    corner = window(list(kinds), p)
+    ax.set_xlim(corner.real, corner.real + p.real)
+    ax.set_ylim(corner.imag + p.imag, corner.imag)  # y grows downward, as in stim's timeslice diagrams
+    ax.set_aspect("equal")
+    ax.set_title(f"{len(kinds)} qubits")
+    ax.legend(loc="upper left", bbox_to_anchor=(1, 1), frameon=False)
+
+
+def layout_png(distance: int, png: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6, 8))
+    draw_layout(ax, distance)
+    fig.savefig(png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def color_hexes(svg: str, centers: dict[complex, int], corners: list[complex], i2pos: dict[int, complex],
+                torus_period: complex) -> str:
+    """Draws colour-filled plaquettes underneath a stim timeslice-svg diagram."""
+    # ponytail: stim has no colour option for timeslices, so recover coordinate -> pixel from its qubit
+    # dot ids. Breaks if stim changes its svg ids; the assert below says so.
+    panels = [tuple(map(float, r)) for r in re.findall(
+        r'id="tick_border:[^"]*" x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"', svg)]
+    # a circuit without TICKs is one borderless panel: the whole svg
+    panels = panels or [(0, 0, *map(float, re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg).groups()))]
+    # dot ids only carry the panel column, so find each dot's panel by position
+    dots = [(i2pos[int(q)], next(k for k, (px, py, w, h) in enumerate(panels)
+                                 if px <= float(x) <= px + w and py <= float(y) <= py + h), float(x), float(y))
+            for q, x, y in re.findall(r'id="qubit_dot:(\d+):[^"]*" cx="([-\d.]+)" cy="([-\d.]+)"', svg)]
+    assert dots and panels, "stim changed its timeslice svg format"
+    xs = sorted((p.real, x) for p, t, x, _ in dots if t == 0)
+    ys = sorted((p.imag, y) for p, t, _, y in dots if t == 0)
+    sx = (xs[-1][1] - xs[0][1]) / (xs[-1][0] - xs[0][0])
+    sy = (ys[-1][1] - ys[0][1]) / (ys[-1][0] - ys[0][0])
+    origin = {t: complex(x - sx * p.real, y - sy * p.imag) for p, t, x, y in dots}
+    # one torus period around the qubits, so wrapped hexes show up once on each side
+    corner = window([p for p, t, _, _ in dots if t == 0], torus_period)
+    left, top = corner.real, corner.imag
+    shifts = [a * torus_period.real + b * torus_period.imag * 1j for a in (-1, 0, 1) for b in (-1, 0, 1)]
+
+    out = []
+    for t, o in origin.items():
+        out.append(f'<clipPath id="hexclip{t}"><rect x="{o.real + sx * left}" y="{o.imag + sy * top}" '
+                   f'width="{sx * torus_period.real}" height="{sy * torus_period.imag}"/></clipPath>'
+                   f'<g clip-path="url(#hexclip{t})">')
+        for h, colour in centers.items():
+            for s in shifts:
+                pts = " ".join(f"{o.real + sx * (h + s + d).real},{o.imag + sy * (h + s + d).imag}" for d in corners)
+                out.append(f'<polygon points="{pts}" fill="{COLORS[colour]}" fill-opacity="0.3" stroke="#666"/>')
+        out.append("</g>")
+    return svg.replace("\n", "\n" + "\n".join(out) + "\n", 1)  # right after <svg>, i.e. below everything
+
+
+def style_qubits(svg: str, kinds: list[str]) -> str:
+    """Stim draws every qubit as the same small dot: redraw each as its kind (`kinds[i]` for qubit i)."""
+    def dot(m: re.Match[str]) -> str:
+        fill = QUBIT_KINDS[kinds[int(m[1])]][0]
+        return (f'<circle id="qubit_dot:{m[1]}:{m[2]}" cx="{m[3]}" cy="{m[4]}" r="5" fill="{fill}" '
+                f'stroke="#333333" stroke-width="1.5"/>')
+    styled, n = re.subn(r'<circle id="qubit_dot:(\d+):([^"]*)" cx="([-\d.]+)" cy="([-\d.]+)" r="2" '
+                        r'stroke="none" fill="black"/>', dot, svg)
+    assert n, "stim changed its timeslice svg format"
+    return styled
+
+
+def round_svg(distance: int, r: int, hex_view: bool) -> str:
+    """Timeslice view of sub-round r, plaquettes coloured underneath; brick-wall or regular hexagons."""
+    circuit = round_circuit(distance, r, hex_view)
+    i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
+    svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
+                      HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
+    return style_qubits(svg, list(qubit_kinds(distance).values()))
+
+
+def honeycomb_pngs(distance: int, out: Path) -> None:
+    """layout.png, then round{r}.png and round{r}_hex.png for each of the 3 sub-rounds."""
+    layout_png(distance, out / "layout.png")
+    for r in range(3):
+        svg_png(round_svg(distance, r, False), out / f"round{r}.png")
+        svg_png(round_svg(distance, r, True), out / f"round{r}_hex.png")
 
 
 def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
@@ -51,11 +162,19 @@ def main() -> None:
     ts.add_argument("--distance", type=int, default=3)
     ts.add_argument("--rounds", type=int, default=3)
     ts.add_argument("--png", type=Path, required=True)
+    hc = sub.add_parser("honeycomb", help="qubit layout and coloured sub-round timeslices, into --out")
+    hc.add_argument("--distance", type=int, default=1)
+    hc.add_argument("--out", type=Path, required=True)
     ler = sub.add_parser("ler")
     ler.add_argument("csvs", type=Path, nargs="+")
     ler.add_argument("--png", type=Path, required=True)
     args = parser.parse_args()
 
+    if args.figure == "honeycomb":
+        args.out.mkdir(parents=True, exist_ok=True)
+        honeycomb_pngs(args.distance, args.out)
+        print(f"wrote {args.out}/")
+        return
     args.png.parent.mkdir(parents=True, exist_ok=True)
     if args.figure == "timeslices":
         timeslices_png(args.distance, args.rounds, args.png)
