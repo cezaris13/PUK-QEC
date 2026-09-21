@@ -1,0 +1,9 @@
+matplotlib
+networkx
+rustworkx
+numpy
+scipy
+stim
+pymatching
+ipykernel
+tqdm
