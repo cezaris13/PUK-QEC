@@ -144,6 +144,34 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
     return circuit
 
 
+def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> stim.Circuit:
+    """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair.
+
+    The reference always starts in |0> and the pair is read out as one Z parity (MZZ), like spin blockade:
+    Z_syndrome * Z_reference, the reference adding its known +1. So only X or Y errors on the reference flip
+    the outcome; it is immune to dephasing.
+    X and Y: the syndrome (`main`, next to d0) starts in |+> and controls a P on d0, which kicks P_d0 back
+    onto its X. SWAP moves it into the dot next to d1, where it controls a P on d1 and picks up P_d1. A final
+    H on that dot (now `reff`) turns its X into the Z that MZZ reads.
+    Z: no Hadamards. The syndrome starts in |0> too, and the CXs point the other way: d0, then d1 (after the
+    SWAP) controls an X on the syndrome, copying Z_d0 Z_d1 straight into its Z.
+    Leaves one measurement record.
+    """
+    # ponytail: one edge per call, each layer TICKed on its own; a whole sub-round needs these layers
+    # merged across all its edges (Z edges simply sit out the H layer).
+    if pauli == "Z":
+        reset, first, second, turn = [("R", [main, reff])], ("CX", [d0, main]), ("CX", [d1, reff]), []
+    else:
+        reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{pauli}", [main, d0]),
+                                      (f"C{pauli}", [reff, d1]), [[("H", [reff])]])
+    circuit = stim.Circuit()
+    for layer in [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]:
+        for name, targets in layer:
+            circuit.append(name, targets)
+        circuit.append("TICK")
+    return circuit
+
+
 def memory_circuit(distance: int, rounds: int) -> stim.Circuit:
     """Noiseless memory experiment with DETECTORs and OBSERVABLE_INCLUDEs, layers separated by TICKs."""
     return stim.Circuit.generated("surface_code:rotated_memory_z", distance=distance, rounds=rounds)

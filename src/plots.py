@@ -1,10 +1,12 @@
 import argparse
 import csv
+import hashlib
 import re
 from pathlib import Path
 
 import cairosvg
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 from floquet import (HEX_CORNERS, QUBIT_CORNERS, hex_centers, memory_circuit, period, qubit_kinds,
                      round_circuit)
@@ -51,7 +53,11 @@ def draw_layout(ax: plt.Axes, distance: int) -> None:
     ax.set_ylim(corner.imag + p.imag, corner.imag)  # y grows downward, as in stim's timeslice diagrams
     ax.set_aspect("equal")
     ax.set_title(f"{len(kinds)} qubits")
-    ax.legend(loc="upper left", bbox_to_anchor=(1, 1), frameon=False)
+    handles, _ = ax.get_legend_handles_labels()
+    handles += [Patch(facecolor=COLORS[c], alpha=0.25, edgecolor="0.4",
+                      label=f"colour {c}: sub-round {c} checks the edges linking two of these")
+                for c in range(3)]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1, 1), frameon=False)
 
 
 def layout_png(distance: int, png: Path) -> None:
@@ -85,11 +91,13 @@ def color_hexes(svg: str, centers: dict[complex, int], corners: list[complex], i
     left, top = corner.real, corner.imag
     shifts = [a * torus_period.real + b * torus_period.imag * 1j for a in (-1, 0, 1) for b in (-1, 0, 1)]
 
+    # ids are page-wide once several SVGs share an HTML page (a notebook), so make them unique per diagram
+    tag = hashlib.sha1(svg.encode()).hexdigest()[:10]
     out = []
     for t, o in origin.items():
-        out.append(f'<clipPath id="hexclip{t}"><rect x="{o.real + sx * left}" y="{o.imag + sy * top}" '
+        out.append(f'<clipPath id="hexclip{tag}_{t}"><rect x="{o.real + sx * left}" y="{o.imag + sy * top}" '
                    f'width="{sx * torus_period.real}" height="{sy * torus_period.imag}"/></clipPath>'
-                   f'<g clip-path="url(#hexclip{t})">')
+                   f'<g clip-path="url(#hexclip{tag}_{t})">')
         for h, colour in centers.items():
             for s in shifts:
                 pts = " ".join(f"{o.real + sx * (h + s + d).real},{o.imag + sy * (h + s + d).imag}" for d in corners)
