@@ -45,6 +45,10 @@ honeycomb: $(HONEYCOMB)
 
 plots: $(TIMESLICES) $(HONEYCOMB) $(RUN)_ler.png
 
+# One ancilla per edge (experiments/one_ancilla.py): layouts and all 6 steps' timeslices, plain and numbered,
+# at DRAW_DISTANCE.
+experiments: experiments/one_ancilla_d$(DRAW_DISTANCE)/layout.png
+
 results/timeslices_d%.png: src/floquet.py src/plots.py
 	$(PY) src/plots.py timeslices --distance $* --rounds $* --png $@
 
@@ -55,6 +59,10 @@ results/honeycomb_d%/layout.png: src/floquet.py src/plots.py
 # The same drawings with numbered qubits, in their own folder so neither ever passes for the other.
 results/honeycomb_numbered_d%/layout.png: src/floquet.py src/plots.py
 	$(PY) src/plots.py honeycomb --distance $* --numbers --out $(@D)
+
+# layout.png stands in for the folder here too; the script picks the folder from the distance.
+experiments/one_ancilla_d%/layout.png: experiments/one_ancilla.py src/floquet.py src/plots.py
+	$(PY) experiments/one_ancilla.py --distance $*
 
 $(RUN)_d%.csv: src/floquet.py src/noise.py src/memory.py
 	$(PY) src/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
