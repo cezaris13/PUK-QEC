@@ -109,42 +109,58 @@ def hex_positions(distance: int) -> dict[complex, complex]:
 
 
 def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
-    """Sub-round r: every colour-r edge's parity measured by CNOT, M, CNOT on the pair, no ancillas.
+    """Step r of the 6-step schedule bX rZ gX bZ rX gZ: every edge of colour r % 3 has its XX (even r) or
+    ZZ (odd r) parity measured by CNOT, M, CNOT on the pair, no ancillas.
 
     QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
     only move where timeslice diagrams draw each qubit.
     """
-    q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
-    q2pos = hex_positions(distance) if hex_view else {q: q for q in q2i}
-    edges: dict[str, list[list[complex]]] = {"X": [], "Y": [], "Z": []}
-    for h, colour in hex_centers(distance).items():
-        if colour == r:
-            for e in EDGE_TYPES:
-                pair = [torus(h + e.hex_to_qubit_delta, distance),
-                        torus(h + e.hex_to_hex_delta - e.hex_to_qubit_delta, distance)]
-                edges[e.pauli].append(sorted_complex(pair))
+    edges_color = "rgb"  # colour 0, 1, 2 as plots.py draws them: blue, red (orange), green
+    parity_meas = "XZ"  # even steps measure XX, odd steps ZZ
+
+
+    # Qubit coordinate -> its index in the circuit.
+    q2i = {}
+    for index, q in enumerate(qubit_kinds(distance)):
+        q2i[q] = index
+
+    # Qubit coordinate -> where diagrams draw it.
+    if hex_view:
+        q2pos = hex_positions(distance)
+    else:
+        q2pos = {}
+        for q in q2i:
+            q2pos[q] = q
+
+    # The two data qubits of every edge, grouped by colour. An edge leaves plaquette h at one corner and
+    # reaches plaquette `far` at the opposite corner; those two plaquettes share a colour, the edge's colour.
+    centers = hex_centers(distance)
+    edges: dict[str, list[list[complex]]] = {"r": [], "g": [], "b": []}
+    for h, colour in centers.items():
+        for e in EDGE_TYPES:
+            far = torus(h + e.hex_to_hex_delta, distance)
+            assert centers[far] == colour, "an edge must connect two plaquettes of the same colour"
+            d1 = torus(h + e.hex_to_qubit_delta, distance)  # where the edge leaves plaquette h
+            d2 = torus(far - e.hex_to_qubit_delta, distance)  # where it reaches plaquette far
+            edges[edges_color[colour]].append(sorted_complex([d1, d2]))
 
     circuit = stim.Circuit()
-    for q, i in q2i.items():
-        circuit.append("QUBIT_COORDS", [i], [q2pos[q].real, q2pos[q].imag])
-    x_qubits = [q2i[q] for pair in edges["X"] for q in pair]
-    y_qubits = [q2i[q] for pair in edges["Y"] for q in pair]
-    pairs = [q2i[q] for group in edges.values() for pair in group for q in pair]
-    circuit.append("H", x_qubits)  # every parity becomes a ZZ parity...
-    circuit.append("H_YZ", y_qubits)
-    circuit.append("TICK")
-    circuit.append("CNOT", pairs)  # ...and then a single Z on the pair's second qubit
-    circuit.append("TICK")
-    circuit.append("M", pairs[1::2])
-    circuit.append("TICK")
-    circuit.append("CNOT", pairs)
-    circuit.append("TICK")
-    circuit.append("H_YZ", y_qubits)  # restore the bases
-    circuit.append("H", x_qubits)
+    for q, index in q2i.items():
+        circuit.append("QUBIT_COORDS", [index], [q2pos[q].real, q2pos[q].imag])
+
+
+
+    checks = [parity_check(parity_meas[r % 2], q2i[e.data[0]], q2i[e.data[1]], q2i[e.main], q2i[e.reff])
+              for e in edge_list(distance) if e.colour == r % 3]
+    for layer in zip(*checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
+        for part in layer:
+            for name, targets in part:
+                circuit.append(name, targets)
+        circuit.append("TICK")
     return circuit
 
 
-def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> stim.Circuit:
+def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[list[tuple[str, list[int]]]]:
     """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair.
 
     The reference always starts in |0> and the pair is read out as one Z parity (MZZ), like spin blockade:
@@ -155,21 +171,15 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> stim.Cir
     H on that dot (now `reff`) turns its X into the Z that MZZ reads.
     Z: no Hadamards. The syndrome starts in |0> too, and the CXs point the other way: d0, then d1 (after the
     SWAP) controls an X on the syndrome, copying Z_d0 Z_d1 straight into its Z.
-    Leaves one measurement record.
+    Returns its layers, each a list of (gate, targets), for the caller to TICK between: `round_circuit`
+    runs layer k of every edge together. Leaves one measurement record.
     """
-    # ponytail: one edge per call, each layer TICKed on its own; a whole sub-round needs these layers
-    # merged across all its edges (Z edges simply sit out the H layer).
     if pauli == "Z":
         reset, first, second, turn = [("R", [main, reff])], ("CX", [d0, main]), ("CX", [d1, reff]), []
     else:
         reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{pauli}", [main, d0]),
                                       (f"C{pauli}", [reff, d1]), [[("H", [reff])]])
-    circuit = stim.Circuit()
-    for layer in [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]:
-        for name, targets in layer:
-            circuit.append(name, targets)
-        circuit.append("TICK")
-    return circuit
+    return [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
 
 
 def memory_circuit(distance: int, rounds: int) -> stim.Circuit:
