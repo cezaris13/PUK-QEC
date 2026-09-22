@@ -156,23 +156,37 @@ def style_qubits(svg: str, kinds: list[str]) -> str:
     return styled
 
 
-def round_svg(distance: int, r: int, hex_view: bool) -> str:
-    """Timeslice view of sub-round r, plaquettes coloured underneath; brick-wall or regular hexagons."""
+def label_qubits(svg: str, labels: list[str]) -> str:
+    """Writes `labels[i]` beside every dot of qubit i in a timeslice diagram (data bold, as in the layouts).
+    They go in right after the dots, so gates, drawn later, stay on top."""
+    def text(m: re.Match[str]) -> str:
+        label = labels[int(m[1])]
+        return (f'{m[0]}<text x="{float(m[2]) + 6}" y="{float(m[3]) - 5}" font-size="9" font-family="sans-serif" '
+                f'fill="#222222" font-weight="{"bold" if label.startswith("D") else "normal"}">{label}</text>')
+    labelled, n = re.subn(r'<circle id="qubit_dot:(\d+):[^"]*" cx="([-\d.]+)" cy="([-\d.]+)"[^>]*/>', text, svg)
+    assert n, "stim changed its timeslice svg format"
+    return labelled
+
+
+def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False) -> str:
+    """Timeslice view of sub-round r, plaquettes coloured underneath; brick-wall or regular hexagons.
+    `numbers` labels every qubit as in the layouts (see `qubit_labels`)."""
     circuit = round_circuit(distance, r, hex_view)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
-    return style_qubits(svg, list(qubit_kinds(distance).values()))
+    svg = style_qubits(svg, list(qubit_kinds(distance).values()))
+    return label_qubits(svg, list(qubit_labels(distance).values())) if numbers else svg
 
 
 def honeycomb_pngs(distance: int, out: Path, numbers: bool = False) -> None:
-    """layout.png and layout_hex.png (qubits labelled with `numbers`), then round{r}.png and
-    round{r}_hex.png for each of the 3 sub-rounds."""
+    """layout.png and layout_hex.png, then round{r}.png and round{r}_hex.png for each of the 6 steps; with
+    `numbers` every qubit is labelled in all of them."""
     layout_png(distance, out / "layout.png", False, numbers)
     layout_png(distance, out / "layout_hex.png", True, numbers)
     for r in range(6):
-        svg_png(round_svg(distance, r, False), out / f"round{r}.png")
-        svg_png(round_svg(distance, r, True), out / f"round{r}_hex.png")
+        svg_png(round_svg(distance, r, False, numbers), out / f"round{r}.png")
+        svg_png(round_svg(distance, r, True, numbers), out / f"round{r}_hex.png")
 
 
 def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
@@ -214,7 +228,7 @@ def main() -> None:
     hc.add_argument("--distance", type=int, default=1)
     hc.add_argument("--out", type=Path, required=True)
     hc.add_argument("--numbers", action="store_true",
-                    help="label every qubit in the layouts: Di data, Sk / Rk syndrome / reference ancilla")
+                    help="label every qubit in the layouts and timeslices: Di data, Sk / Rk syndrome / reference ancilla")
     ler = sub.add_parser("ler")
     ler.add_argument("csvs", type=Path, nargs="+")
     ler.add_argument("--png", type=Path, required=True)
