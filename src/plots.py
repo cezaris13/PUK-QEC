@@ -170,7 +170,7 @@ def honeycomb_pngs(distance: int, out: Path, numbers: bool = False) -> None:
     round{r}_hex.png for each of the 3 sub-rounds."""
     layout_png(distance, out / "layout.png", False, numbers)
     layout_png(distance, out / "layout_hex.png", True, numbers)
-    for r in range(3):
+    for r in range(6):
         svg_png(round_svg(distance, r, False), out / f"round{r}.png")
         svg_png(round_svg(distance, r, True), out / f"round{r}_hex.png")
 

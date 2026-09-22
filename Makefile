@@ -23,7 +23,7 @@ P_MAX = 1e-2
 NUM = 9
 # Honeycomb lattice size for `make honeycomb` drawings: 12*d^2 data qubits plus 2 spin ancillas on each of
 # the 18*d^2 edges, so 1 is 12 + 36 qubits and 2 is 48 + 144; bigger gets hard to read.
-DRAW_DISTANCE = 1
+DRAW_DISTANCE = 2
 # Set NUMBERS=1 to label every qubit in the layout drawings: Di data, Sk / Rk syndrome / reference ancilla.
 NUMBERS =
 
