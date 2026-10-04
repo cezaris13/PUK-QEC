@@ -19,7 +19,10 @@ QUBIT_KINDS = {"data": ("#333333", "data"), "main": ("white", "ancilla: syndrome
 
 
 def svg_png(svg: str, png: Path) -> None:
-    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(png), scale=2, background_color="white")
+    """2x scale, less when that would pass cairo's 32767 px limit on either side."""
+    w, h = map(float, re.search(r'viewBox="[\d.]+ [\d.]+ ([\d.]+) ([\d.]+)"', svg).groups())
+    cairosvg.svg2png(bytestring=svg.encode(), write_to=str(png), scale=min(2, 32000 / max(w, h)),
+                     background_color="white")
 
 
 def timeslices_png(distance: int, rounds: int, png: Path) -> None:
@@ -199,6 +202,8 @@ def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
         rows = [r for r in rows if int(r["errors"])]  # zero errors has no place on a log axis
         ax.loglog([float(r["p"]) for r in rows], [float(r["ler"]) for r in rows], "o-",
                   color=color, lw=1.5, ms=5, label=label)
+    # Below this line the logical qubit beats a bare physical one.
+    ax.axline((1e-3, 1e-3), (1e-2, 1e-2), color="0.5", ls="--", lw=1, label="LER = p")
     ax.set(xlabel="physical error rate p", ylabel="logical error rate",
            title=f"{runs[0][0]['noise']} noise, η = {float(runs[0][0]['eta']):g}")
     ax.grid(which="major", color="#e4e4e0", lw=0.8)
