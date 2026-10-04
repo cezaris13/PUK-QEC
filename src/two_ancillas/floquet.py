@@ -108,8 +108,14 @@ def hex_positions(distance: int) -> dict[complex, complex]:
     return positions
 
 
+def step_colour(r: int) -> int:
+    """The colour step r measures. Colours 0, 1, 2 are b, r, g, so the schedule rX gZ bX rZ gX bZ is
+    colour 1, 2, 0, 1, 2, 0 with Pauli X, Z alternating."""
+    return (r + 1) % 3
+
+
 def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
-    """Step r of the 6-step schedule bX rZ gX bZ rX gZ: every edge of colour r % 3 has its XX (even r) or
+    """Step r of the 6-step schedule rX gZ bX rZ gX bZ: every edge of colour `step_colour(r)` has its XX (even r) or
     ZZ (odd r) parity measured by CNOT, M, CNOT on the pair, no ancillas.
 
     QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
@@ -151,7 +157,7 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
 
 
     checks = [parity_check(parity_meas[r % 2], q2i[e.data[0]], q2i[e.data[1]], q2i[e.main], q2i[e.reff])
-              for e in edge_list(distance) if e.colour == r % 3]
+              for e in edge_list(distance) if e.colour == step_colour(r)]
     for layer in zip(*checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
         for part in layer:
             for name, targets in part:
@@ -183,13 +189,16 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[lis
 
 
 def memory_circuit(distance: int, rounds: int,
-                   step: Callable[[int, int], stim.Circuit] = round_circuit) -> stim.Circuit:
-    """Noiseless Z-basis memory experiment of the CSS honeycomb code, with DETECTORs and one OBSERVABLE.
+                   step: Callable[[int, int], stim.Circuit] = round_circuit, basis: str = "Z") -> stim.Circuit:
+    """Noiseless memory experiment of the CSS honeycomb code in `basis` (Z or X), with DETECTORs and one
+    OBSERVABLE.
 
     Reset every data qubit to |0>, run `rounds` full periods of the 6-step schedule (see `round_circuit`),
-    then measure every data qubit in Z.
+    then measure every data qubit in Z. In the X basis the same with X and Z swapped: reset to |+>, start the
+    schedule three steps on (step s + 3 checks the same colour as step s, in the other Pauli), read out in X.
+    A Z memory never sees Z errors, nor an X memory X errors, so thresholds take the worse of the two.
 
-    `step(distance, r)` builds step r: any circuit that puts the parity of each colour r % 3 edge into one
+    `step(distance, r)` builds step r: any circuit that puts the parity of each colour `step_colour(r)` edge into one
     record, in `edge_list` order, keeps data qubit i at stim index i, and sets its own QUBIT_COORDS.
     `round_circuit` by default; the src/single_ancilla/ schemes pass their own.
 
@@ -211,7 +220,9 @@ def memory_circuit(distance: int, rounds: int,
     corners = {h: {torus(h + c, distance) for c in QUBIT_CORNERS} for h in colour_of}  # its 6 data qubits
 
     circuit = stim.Circuit()
-    circuit.append("R", range(len(data)))
+    other = "ZX"[basis == "Z"]  # the Pauli whose plaquettes start unknown
+    offset = 3 if basis == "X" else 0  # step s of an X memory is the Z memory's step s + 3
+    circuit.append("R" if basis == "Z" else "RX", range(len(data)))
     circuit.append("TICK")
 
     # Measurements are numbered 0, 1, 2, ... in the order they happen; `count` is how many so far.
@@ -225,19 +236,19 @@ def memory_circuit(distance: int, rounds: int,
     # XOR is its value, or None if it is unknown (never measured, or randomised since).
     # After the reset every data qubit is Z = +1, so every Z plaquette is known to be +1: an empty list
     # (XOR of nothing = 0). X plaquettes are random after a Z reset: unknown.
-    known = {("Z", h): [] for h in colour_of} | {("X", h): None for h in colour_of}
+    known = {(basis, h): [] for h in colour_of} | {(other, h): None for h in colour_of}
 
     # The logical observable: Z along a horizontal loop through data rows y = 0 and y = 1. No single fixed
     # operator survives every step, so its value hops between row 0, row 1 and both rows as the checks run.
     # Following it through the schedule, it works out to: XOR of every ZZ check with both data qubits in
-    # rows 0-1, plus the final Z readout of row 0. (Checked numerically: deterministic without noise.)
+    # rows 0-1, plus the final Z readout of row 1. (Checked numerically: deterministic without noise.)
     observable: list[int] = []
     in_band = lambda pair: pair[0].imag in (0, 1) and pair[1].imag in (0, 1)
 
     for s in range(6 * rounds):
-        # Schedule bX rZ gX bZ rX gZ: Pauli alternates X, Z; colour cycles 0, 1, 2.
-        pauli, other_pauli, colour = "XZ"[s % 2], "ZX"[s % 2], s % 3
-        circuit += step(distance, s)
+        # Schedule rX gZ bX rZ gX bZ: Pauli alternates X, Z; colour cycles 1, 2, 0.
+        pauli, other_pauli, colour = "XZ"[(s + offset) % 2], "ZX"[(s + offset) % 2], step_colour(s + offset)
+        circuit += step(distance, s + offset)
 
         # One measurement per edge of this colour, in `edge_list` order (as `round_circuit` makes them).
         # edge's two data qubits -> the number of its measurement.
@@ -256,11 +267,11 @@ def memory_circuit(distance: int, rounds: int,
                 detector(now + known[(pauli, h)])  # new value XOR old value should be 0
             known[(pauli, h)] = now
 
-        if pauli == "Z":
+        if pauli == basis:
             observable += [m for pair, m in measured.items() if in_band(pair)]
 
-    # Final readout: every data qubit in Z. The last step (step 5 of the period) was ZZ on colour-2 edges.
-    circuit.append("M", range(len(data)))
+    # Final readout: every data qubit in Z. The last step (step 5 of the period) was ZZ on colour-0 edges.
+    circuit.append("M" if basis == "Z" else "MX", range(len(data)))
     readout = {q: count + i for i, q in enumerate(data)}
     count += len(data)
 
@@ -268,12 +279,12 @@ def memory_circuit(distance: int, rounds: int,
     for (d0, d1), m in measured.items():
         detector([m, readout[d0], readout[d1]])
     # Z plaquettes of the other two colours are products of those checks, so the line above already
-    # covers them. Colour-2 Z plaquettes aren't: compare their last value with their 6 corners' readouts.
+    # covers them. Colour-0 Z plaquettes aren't: compare their last value with their 6 corners' readouts.
     for h, c in colour_of.items():
         if c == colour:
-            detector(known[("Z", h)] + [readout[q] for q in corners[h]])
+            detector(known[(basis, h)] + [readout[q] for q in corners[h]])
 
-    observable += [readout[q] for q in data if q.imag == 0]
+    observable += [readout[q] for q in data if q.imag == 1]
     # ponytail: one of the torus's two logical qubits; add the vertical loop as observable 1 to catch both.
     circuit.append("OBSERVABLE_INCLUDE", [stim.target_rec(m - count) for m in observable], 0)
     return circuit

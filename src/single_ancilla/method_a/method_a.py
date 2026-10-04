@@ -8,8 +8,9 @@ import stim
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "two_ancillas"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from floquet import (EDGE_TYPES, HEX_CORNERS, QUBIT_CORNERS, edge_ends, hex_centers, hex_positions, period,
-                     qubits, sorted_complex, torus)
+                     qubits, sorted_complex, step_colour, torus)
 from plots import COLORS, QUBIT_KINDS, color_hexes, label_qubits, style_qubits, svg_png, window
 
 
@@ -95,10 +96,10 @@ def corner_check(pauli: str, d0: int, d1: int, syndrome: int, reference: int) ->
 
 
 def rotated(r: int) -> int:
-    """The hexes step r rotates. Rotating the colour c hexes checks the colour c - 1 edges, so the colour r % 3
-    edges step r measures (bX rZ gX bZ rX gZ, as in floquet.py) come from rotating colour (r + 1) % 3:
-    blue edges from red hexes, red edges from green hexes, green edges from blue hexes."""
-    return (r + 1) % 3
+    """The hexes step r rotates. Rotating the colour c hexes checks the colour c - 1 edges, so the colour
+    `step_colour(r)` edges step r measures (rX gZ bX rZ gX bZ, as in floquet.py) come from rotating colour
+    step_colour(r) + 1: red edges from green hexes, green edges from blue hexes, blue edges from red hexes."""
+    return (step_colour(r) + 1) % 3
 
 
 def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
@@ -106,7 +107,7 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
     1. SWAP the data qubits and ancillas around every `rotated(r)` hex, rotating the data counterclockwise
        (see `ring_swaps`), then an empty TICK so diagrams show where everything is.
     2. On every other corner of those hexes, the syndrome measures the XX (even r) or ZZ (odd r) parity of
-       the two data next to it, which together are every colour r % 3 edge, read out against the ancilla of
+       the two data next to it, which together are every colour step_colour(r) edge, read out against the ancilla of
        the corner's `rotated(r)` edge (see `syndrome_checks`, `corner_check`). Record j is the j-th check's
        parity. The other corners idle.
     3. The same SWAPs again, rotating everything back clockwise."""
@@ -186,7 +187,7 @@ def check(distance: int) -> None:
     for r in range(6):
         circuit = round_circuit(distance, r)
         checks = syndrome_checks(distance, rotated(r))
-        assert {colours[frozenset((u, v))] for _, u, v, _ in checks} == {r % 3}, r  # the schedule's colour
+        assert {colours[frozenset((u, v))] for _, u, v, _ in checks} == {step_colour(r)}, r  # the schedule's colour
         # the diagram labels agree with the circuit: MZZ reads S<k>, A<k> of edge k; every data qubit once
         _, label = roles(distance, r, True)
         mzz = [t.value for inst in circuit if inst.name == "MZZ" for t in inst.targets_copy()]
@@ -250,22 +251,33 @@ def layout_png(distance: int, hex_view: bool, numbers: bool, png: Path) -> None:
     plt.close(fig)
 
 
-def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False) -> str:
+def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, sensors: bool = True) -> str:
     """Timeslice view of step r, plaquettes coloured underneath; brick-wall or regular hexagons. Tick 0 is the
     swaps; from tick 1 up to the swaps back, qubits are drawn in their roles after the swaps (see `roles`),
-    labelled with `numbers`."""
+    labelled with `numbers`, and with `sensors` a square for each readout's charge sensor."""
     circuit = round_circuit(distance, r, hex_view)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
     ticks = [roles(distance, r, False)] + [roles(distance, r, True)] * (circuit.num_ticks - 1)
-    return style_ticks(svg, [k for k, _ in ticks], [lab for _, lab in ticks] if numbers else None)
+    svg = style_ticks(svg, [k for k, _ in ticks], [lab for _, lab in ticks] if numbers else None)
+    # Each check's sensor: on the far side of its corner u from the reference A<k>, inside the rotating hex.
+    from shared import local_pairs, pixel_period, readout_squares  # shared imports this module: import late
+    svg = local_pairs(svg, i2pos, period(distance))
+    if not sensors:
+        return svg
+    mzz = [t.value for inst in circuit if inst.name == "MZZ" for t in inst.targets_copy()]
+    return readout_squares(svg, list(zip(mzz[::2], mzz[1::2])), pixel_period(svg, i2pos, period(distance)),
+                           away=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--distance", type=int, default=2)
-    distance = parser.parse_args().distance
+    parser.add_argument("--sensors", action=argparse.BooleanOptionalAction, default=True,
+                        help="draw each readout's charge sensor as a square")
+    args = parser.parse_args()
+    distance, sensors = args.distance, args.sensors
     check(distance)
     out = Path(__file__).resolve().parents[3] / "results" / "single_ancilla" / "method_a" / f"d{distance}"
     out.mkdir(parents=True, exist_ok=True)
@@ -274,8 +286,8 @@ def main() -> None:
         layout_png(distance, hex_view, False, out / f"layout{view}.png")
         layout_png(distance, hex_view, True, out / f"layout{view}_numbered.png")
         for r in range(6):
-            svg_png(round_svg(distance, r, hex_view), out / f"round{r}{view}.png")
-            svg_png(round_svg(distance, r, hex_view, True), out / f"round{r}{view}_numbered.png")
+            svg_png(round_svg(distance, r, hex_view, False, sensors), out / f"round{r}{view}.png")
+            svg_png(round_svg(distance, r, hex_view, True, sensors), out / f"round{r}{view}_numbered.png")
     print(f"wrote {out}/")
 
 

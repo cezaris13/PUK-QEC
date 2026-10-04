@@ -2,7 +2,7 @@
 syndrome is read out at a corner of a hex instead of the data walking around it (method A, src/single_ancilla/method_a,
 whose layout and drawing helpers this builds on).
 
-Step r checks the colour c = r % 3 edges from the hexes of colour c - 1 (on the red hex D0 D12 D13 D14 D2 D1 of
+Step r checks the colour c = step_colour(r) edges from the hexes of colour c - 1 (on the red hex D0 D12 D13 D14 D2 D1 of
 the d = 2 layout: the green edges D0-D1, D12-D13, D2-D14). `checks` gives each one's qubits; a method is a
 `scheme(pauli, u, v, a, s, o, corner) -> (layers, syndrome, reference)` that turns one check into gate layers,
 and this module runs every check's layer k together, verifies the result (`check`) and draws it (`main`).
@@ -16,7 +16,7 @@ import stim
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "method_a"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "two_ancillas"))
-from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, torus
+from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, step_colour, torus
 from method_a import edge_list, positions, qubit_kinds, style_ticks
 from plots import color_hexes, svg_png
 
@@ -54,14 +54,14 @@ def gates(scheme, pauli: str, check: tuple, q2i: dict[complex, int]) -> tuple[La
 
 
 def round_circuit(distance: int, r: int, scheme, hex_view: bool = False) -> stim.Circuit:
-    """Step r: every colour r % 3 edge's XX (even r) or ZZ (odd r) parity into one record, in `edge_list` order,
+    """Step r: every colour step_colour(r) edge's XX (even r) or ZZ (odd r) parity into one record, in `edge_list` order,
     `scheme`'s layer k of every check together, a TICK after each."""
     pos = positions(distance, hex_view)
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     circuit = stim.Circuit()
     for q, i in q2i.items():
         circuit.append("QUBIT_COORDS", [i], [pos[q].real, pos[q].imag])
-    for layer in zip(*[gates(scheme, "XZ"[r % 2], c, q2i)[0] for c in checks(distance, r % 3)]):
+    for layer in zip(*[gates(scheme, "XZ"[r % 2], c, q2i)[0] for c in checks(distance, step_colour(r))]):
         for part in layer:
             for name, targets in part:
                 circuit.append(name, targets)
@@ -78,7 +78,7 @@ def roles(distance: int, r: int, scheme) -> list[tuple[list[str], list[str]]]:
     kind = list(kinds.values())
     label = [f"D{i}" if k == "data" else f"A{i - n_data}" for i, k in enumerate(kind)]
     q2i = {q: i for i, q in enumerate(kinds)}
-    for c in checks(distance, r % 3):
+    for c in checks(distance, step_colour(r)):
         kind[gates(scheme, "XZ"[r % 2], c, q2i)[2]] = "reff"
     circuit = round_circuit(distance, r, scheme)
     out = [(kind[:], label[:])]
@@ -113,7 +113,7 @@ def check(distance: int, scheme) -> None:
             if inst.name in ("SWAP", "CX", "CY", "CZ", "MZZ"):
                 t = [x.value for x in inst.targets_copy()]
                 assert all(frozenset(p) in next_to for p in zip(t[::2], t[1::2])), (r, inst)
-        for j, (_, u, v, *_) in enumerate(checks(distance, r % 3)):
+        for j, (_, u, v, *_) in enumerate(checks(distance, step_colour(r))):
             parity = stim.PauliString(circuit.num_qubits)
             parity[q2i[u]] = parity[q2i[v]] = "XZ"[r % 2]
             assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (r, j)
@@ -125,7 +125,8 @@ def check(distance: int, scheme) -> None:
     floquet.memory_circuit(distance, 2, step).detector_error_model(allow_gauge_detectors=False)  # raises if not
 
 
-def round_svg(distance: int, r: int, scheme, hex_view: bool, numbers: bool = False, away: bool = False) -> str:
+def round_svg(distance: int, r: int, scheme, hex_view: bool, numbers: bool = False, away: bool = False,
+              sensors: bool = True) -> str:
     """Timeslice view of step r, plaquettes coloured underneath, qubits drawn in their roles at each tick, a
     square for each readout's sensor (see `readout_squares`)."""
     circuit = round_circuit(distance, r, scheme, hex_view)
@@ -138,7 +139,10 @@ def round_svg(distance: int, r: int, scheme, hex_view: bool, numbers: bool = Fal
     right = {q2i[torus(h + 1, distance)] for h in hex_centers(distance)}
     mzz = [t.value for inst in circuit if inst.name == "MZZ" for t in inst.targets_copy()]
     pairs = [(i, j) if i in right else (j, i) for i, j in zip(mzz[::2], mzz[1::2])]
-    return readout_squares(local_pairs(svg, i2pos, period(distance)), pairs, pixel_period(svg, i2pos, period(distance)),
+    svg = local_pairs(svg, i2pos, period(distance))
+    if not sensors:
+        return svg
+    return readout_squares(svg, pairs, pixel_period(svg, i2pos, period(distance)),
                            away)
 
 
@@ -202,14 +206,17 @@ def main(scheme, name: str, doc: str, away: bool = False) -> None:
     results/single_ancilla/<name>/d<distance>/; `doc` is the --help text."""
     parser = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--distance", type=int, default=2)
-    distance = parser.parse_args().distance
+    parser.add_argument("--sensors", action=argparse.BooleanOptionalAction, default=True,
+                        help="draw each readout's charge sensor as a square")
+    args = parser.parse_args()
+    distance, sensors = args.distance, args.sensors
     check(distance, scheme)
     out = RESULTS / name / f"d{distance}"
     out.mkdir(parents=True, exist_ok=True)
     for hex_view in (False, True):
         view = "_hex" if hex_view else ""
         for r in range(6):
-            svg_png(round_svg(distance, r, scheme, hex_view, False, away), out / f"round{r}{view}.png")
-            svg_png(round_svg(distance, r, scheme, hex_view, True, away), out / f"round{r}{view}_numbered.png")
+            svg_png(round_svg(distance, r, scheme, hex_view, False, away, sensors), out / f"round{r}{view}.png")
+            svg_png(round_svg(distance, r, scheme, hex_view, True, away, sensors), out / f"round{r}{view}_numbered.png")
     print(f"wrote {out}/")
 

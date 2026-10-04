@@ -14,15 +14,27 @@ import stim
 from tqdm import tqdm
 
 from floquet import memory_circuit, round_circuit
-from noise import NOISE_MODELS, add_noise
+from noise import NOISE_MODELS, add_noise, uniform_noise_model
+
+
+def uniform_matcher(circuit: stim.Circuit, p: float = 0.01) -> pymatching.Matching:
+    """The decoder of IBM's QEC-with-spin-qubits, for any circuit: matching weights from one uniform error rate
+    `p` (theirs is 0.01) instead of the real noise, so it knows nothing of biases or ratios between error
+    sources. Theirs is a matching graph written by hand for the heavy-hex lattice; this one is Stim's from the
+    noiseless `circuit` under noise.uniform_noise_model(p), built once and reused at every noise point."""
+    dem = add_noise(circuit, uniform_noise_model(p)).detector_error_model(decompose_errors=True,
+                                                                            approximate_disjoint_errors=True)
+    return pymatching.Matching.from_detector_error_model(dem)
 
 
 def logical_errors(circuit: stim.Circuit, shots: int, max_errors: int | None = None,
-                   batch: int = 100_000) -> tuple[int, int]:
+                   batch: int = 100_000, matcher: pymatching.Matching | None = None) -> tuple[int, int]:
     """(errors, shots run): shots where MWPM gets any logical observable wrong, sampled `batch` at a time so
-    millions of shots fit in memory, stopping early once `max_errors` are seen."""
-    dem = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
-    matcher = pymatching.Matching.from_detector_error_model(dem)
+    millions of shots fit in memory, stopping early once `max_errors` are seen. Decodes with `matcher`, or by
+    default one built from `circuit`'s own error model, which knows the noise exactly."""
+    if matcher is None:
+        dem = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
+        matcher = pymatching.Matching.from_detector_error_model(dem)
     sampler = circuit.compile_detector_sampler()
     errors = done = 0
     while done < shots and (max_errors is None or errors < max_errors):

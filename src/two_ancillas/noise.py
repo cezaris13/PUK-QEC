@@ -185,6 +185,37 @@ def hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseM
     )
 
 
+def spin_qubit_noise_model(p_g1: float, p_g2: float, p_t1: float, p_t2: float, p_r: float) -> NoiseModel:
+    """Hetenyi & Wootton's independent error sources ("Tailoring quantum error correction to spin qubits",
+    arXiv:2306.17786), as IBM's QEC-with-spin-qubits applies them:
+
+        1-qubit gates              DEPOLARIZE1  p_g1
+        2-qubit gates (CX, SWAP)   DEPOLARIZE2  p_g2
+        readout, reset             flip         p_r
+        idling, once per step      relaxation p_t1 (split over X and Y), dephasing p_t2 (Z)
+
+    The idling hits every qubit left idle while a step's ancillas are read out, as IBM's idles every data
+    qubit after each edge measurement. src/single_ancilla/thresholds.py sets these from (p, theta, phi,
+    eta_G, eta_T)."""
+    two_qubit = NoiseTerm(gate_noise_name="DEPOLARIZE2", gate_noise_probs=[p_g2])
+    return NoiseModel(
+        R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
+        M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
+        H_gate=NoiseTerm(gate_noise_name="DEPOLARIZE1", gate_noise_probs=[p_g1]),
+        CX_gate=two_qubit,
+        CZ_gate=two_qubit,
+        SWAP_gate=two_qubit,
+        round_noise_name="PAULI_CHANNEL_1",
+        round_noise_probs=[p_t1 / 2, p_t1 / 2, p_t2],
+    )
+
+
+def uniform_noise_model(p: float) -> NoiseModel:
+    """Every channel `spin_qubit_noise_model` uses, all at `p` and depolarizing: the reference
+    memory.uniform_matcher builds its fixed decoder weights from."""
+    return spin_qubit_noise_model(p, p, 2 * p / 3, p / 3, p)
+
+
 #: name -> f(p, eta) -> NoiseModel. `--noise` on the sweep picks from these.
 NOISE_MODELS = {
     "spin": spin_noise_model,
