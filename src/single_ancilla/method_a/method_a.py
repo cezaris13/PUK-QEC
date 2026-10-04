@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import stim
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "two_ancillas"))
 from floquet import (EDGE_TYPES, HEX_CORNERS, QUBIT_CORNERS, edge_ends, hex_centers, hex_positions, period,
                      qubits, sorted_complex, torus)
 from plots import COLORS, QUBIT_KINDS, color_hexes, label_qubits, style_qubits, svg_png, window
@@ -64,7 +64,8 @@ def ring_swaps(distance: int, colour: int) -> list[tuple[complex, complex]]:
 
 def syndrome_checks(distance: int, colour: int) -> list[tuple[int, complex, complex, complex]]:
     """(k, u, v, a) for every other edge u-v around each hex of `colour`: right to bottom-right, bottom-left to
-    left, top-left to top-right; sorted by k. After the counterclockwise swaps the ancilla on corner u is the
+    left, top-left to top-right; in `edge_list` order of the checked edge u-v, the order floquet.memory_circuit
+    expects the records in. After the counterclockwise swaps the ancilla on corner u is the
     syndrome, with u's data moved in on one side and v's on the other, and it reads out against a, the
     ancilla halfway along edge k: the `colour` edge at u, the syndrome's third neighbour. The checked edges
     are one whole colour class, so every data qubit is in exactly one check and every a in at most one."""
@@ -72,12 +73,13 @@ def syndrome_checks(distance: int, colour: int) -> list[tuple[int, complex, comp
     for k, (c, d0, d1, a) in enumerate(edge_list(distance)):
         if c == colour:
             at[d0] = at[d1] = (k, a)
+    edge_index = {frozenset((d0, d1)): k for k, (_, d0, d1, _) in enumerate(edge_list(distance))}
     out = []
     for h, c in hex_centers(distance).items():
         if c == colour:
             ring = [torus(h + corner, distance) for corner in QUBIT_CORNERS]
             out += [(*at[ring[i]], ring[i], ring[i + 1]) for i in (0, 2, 4)]
-    return sorted(((k, u, v, a) for k, a, u, v in out), key=lambda check: check[0])
+    return sorted(((k, u, v, a) for k, a, u, v in out), key=lambda check: edge_index[frozenset(check[1:3])])
 
 
 def corner_check(pauli: str, d0: int, d1: int, syndrome: int, reference: int) -> list[list[tuple[str, list[int]]]]:
@@ -265,8 +267,8 @@ def main() -> None:
     parser.add_argument("--distance", type=int, default=2)
     distance = parser.parse_args().distance
     check(distance)
-    out = Path(__file__).parent / f"one_ancilla_d{distance}"
-    out.mkdir(exist_ok=True)
+    out = Path(__file__).resolve().parents[3] / "results" / "single_ancilla" / "method_a" / f"d{distance}"
+    out.mkdir(parents=True, exist_ok=True)
     for hex_view in (False, True):
         view = "_hex" if hex_view else ""
         layout_png(distance, hex_view, False, out / f"layout{view}.png")
