@@ -6,3 +6,8 @@ results
 
 *.png
 *.tex
+
+viewer/node_modules/
+viewer/dist/
+
+package-lock.json
