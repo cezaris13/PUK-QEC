@@ -3,7 +3,7 @@
     .venv/bin/python src/single_ancilla/decode.py --distances 3 5 --noise spin --eta 10 --shots 10000
     .venv/bin/python src/single_ancilla/decode.py --schemes method_a method_b method_c
 
-"pairs" is src/two_ancillas/floquet.py's syndrome + reference ancilla pair on every edge; the rest have one ancilla per
+"pairs" is src/two_ancillas/pairs.py's syndrome + reference ancilla pair on every edge; the rest have one ancilla per
 edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (src/single_ancilla/<name>/). All run through
 floquet.memory_circuit, so they share every detector and the observable, and only their step circuits (and so
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
@@ -17,11 +17,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "two_ancillas"))
+SRC = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(SRC / "shared"), str(SRC / "two_ancillas")]
 import floquet
+import pairs
+from drawing import COLORS
 from memory import sweep
 from noise import NOISE_MODELS, add_noise
-from plots import COLORS
 
 for name in ("method_a", "method_b", "method_c"):
     sys.path.insert(0, str(Path(__file__).resolve().parent / name))
@@ -29,7 +31,7 @@ import method_a
 import method_b
 import method_c
 
-SCHEMES = {"pairs": floquet.round_circuit, "method_a": method_a.round_circuit, "method_b": method_b.round_circuit,
+SCHEMES = {"pairs": pairs.round_circuit, "method_a": method_a.round_circuit, "method_b": method_b.round_circuit,
            "method_c": method_c.round_circuit}
 # line style and marker per scheme; colour is the distance
 STYLES = {"pairs": ("-", "o"), "method_a": ("--", "o"), "method_b": ("-.", "^"), "method_c": (":", "v")}

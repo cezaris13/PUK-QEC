@@ -1,11 +1,13 @@
 """Memory experiment: logical error rate vs physical p, as CSV. `make plots` runs it per distance.
 
-    .venv/bin/python src/two_ancillas/memory.py --distance 3 --rounds 3 --noise spin --eta 10 --csv results/two_ancillas/spin_eta10_d3.csv
+    .venv/bin/python src/shared/memory.py --distance 3 --rounds 3 --noise spin --eta 10 --csv results/two_ancillas/spin_eta10_d3.csv
 
-The noiseless circuit comes from `floquet.memory_circuit`; `noise.add_noise` applies the model at every p.
+Run as a script it sweeps the two-ancilla scheme (src/two_ancillas/pairs.py). The noiseless circuit comes from
+`floquet.memory_circuit`; `noise.add_noise` applies the model at every p.
 """
 import argparse
 import csv
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +15,7 @@ import pymatching
 import stim
 from tqdm import tqdm
 
-from floquet import memory_circuit, round_circuit
+from floquet import memory_circuit
 from noise import NOISE_MODELS, add_noise, uniform_noise_model
 
 
@@ -51,7 +53,7 @@ def count_logical_errors(circuit: stim.Circuit, shots: int) -> int:
 
 
 def sweep(distance: int, rounds: int, noise: str, eta: float, ps: list[float], shots: int,
-          step=round_circuit, max_errors: int | None = None) -> list[dict]:
+          step, max_errors: int | None = None) -> list[dict]:
     """One row per p: the noise model at that p on `memory_circuit(distance, rounds, step)`, decoded; up to
     `shots` shots, fewer once `max_errors` logical errors are in (the row says how many ran)."""
     circuit = memory_circuit(distance, rounds, step)
@@ -76,8 +78,12 @@ def main() -> None:
     parser.add_argument("--csv", type=Path, required=True)
     args = parser.parse_args()
 
+    # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "two_ancillas"))
+    from pairs import round_circuit
+
     ps = list(np.geomspace(args.p_min, args.p_max, args.num))
-    rows = sweep(args.distance, args.rounds, args.noise, args.eta, ps, args.shots)
+    rows = sweep(args.distance, args.rounds, args.noise, args.eta, ps, args.shots, round_circuit)
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with open(args.csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0])

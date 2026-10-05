@@ -56,10 +56,11 @@ def qubits(distance: int) -> list[complex]:
 class Edge:
     pauli: str
     colour: int  # the sub-round that measures it: the colour of the two plaquettes it joins
-    data: tuple[complex, complex]
-    # The two spin ancillas between the data qubits, read out together by spin blockade (as in SpinQEC):
-    main: complex  # does the calculation (holds the syndrome); sits next to data[0]
-    reff: complex  # its readout reference, held in a known state; sits next to data[1]
+    data: tuple[complex, complex]  # its two data qubits, on the torus
+    # The same two ends unwrapped (data[0]'s first), so the segment between them never jumps across the torus
+    # boundary: in brick-wall coordinates and on regular hexagons. Each scheme puts its ancillas along it.
+    ends: tuple[complex, complex]
+    hex_ends: tuple[complex, complex]
 
 
 def edge_ends(h: complex, e: EdgeType, corners: list[complex]) -> tuple[complex, complex]:
@@ -69,42 +70,29 @@ def edge_ends(h: complex, e: EdgeType, corners: list[complex]) -> tuple[complex,
             h + e.hex_to_hex_delta + corners[QUBIT_CORNERS.index(-e.hex_to_qubit_delta)])
 
 
-def thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
-    """The two points splitting a -> b into thirds: where an edge's ancillas sit."""
-    return torus(a + (b - a) / 3, distance), torus(a + (b - a) * 2 / 3, distance)
-
-
 def edge_list(distance: int) -> list[Edge]:
-    """Every edge once, each with the two spin ancillas that sit between its data qubits."""
+    """Every edge once, in the order every step reads them out (see `memory_circuit`): the one place that order
+    comes from, so the schemes build their ancillas from this list."""
+    centers = hex_centers(distance)
     out = []
-    for h, colour in hex_centers(distance).items():
+    for h, colour in centers.items():
         for e in EDGE_TYPES:
+            assert centers[torus(h + e.hex_to_hex_delta, distance)] == colour, "an edge joins two same-colour hexes"
             a, b = edge_ends(h, e, QUBIT_CORNERS)
-            out.append(Edge(e.pauli, colour, (torus(a, distance), torus(b, distance)), *thirds(a, b, distance)))
+            out.append(Edge(e.pauli, colour, (torus(a, distance), torus(b, distance)), (a, b),
+                            edge_ends(h, e, HEX_CORNERS)))
     return out
 
 
-def qubit_kinds(distance: int) -> dict[complex, str]:
-    """Every qubit -> "data", "main" or "reff", in index order: a qubit's index in every circuit is its
-    position here. Data qubits first (as in `qubits`), then each edge's main and reff."""
-    kinds = {q: "data" for q in qubits(distance)}
-    for edge in edge_list(distance):
-        kinds[edge.main] = "main"
-        kinds[edge.reff] = "reff"
-    return kinds
-
-
 def hex_positions(distance: int) -> dict[complex, complex]:
-    """Qubit -> where it is drawn when plaquettes are regular hexagons rather than brick-wall rectangles."""
+    """Data qubit -> where it is drawn when plaquettes are regular hexagons rather than brick-wall rectangles.
+    Each scheme places its own ancillas along `Edge.hex_ends`."""
     positions = {}
     for h in hex_centers(distance):
         for qubit_corner, hex_corner in zip(QUBIT_CORNERS, HEX_CORNERS):
             p = torus(h + hex_corner, distance)
             existing = positions.setdefault(torus(h + qubit_corner, distance), p)
             assert abs(existing - p) < 1e-9, "the 3 hexes sharing a qubit must agree on where it goes"
-        for e in EDGE_TYPES:  # ancillas stay a third of the way along their edge
-            positions.update(zip(thirds(*edge_ends(h, e, QUBIT_CORNERS), distance),
-                                 thirds(*edge_ends(h, e, HEX_CORNERS), distance)))
     return positions
 
 
@@ -114,93 +102,20 @@ def step_colour(r: int) -> int:
     return (r + 1) % 3
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
-    """Step r of the 6-step schedule rX gZ bX rZ gX bZ: every edge of colour `step_colour(r)` has its XX (even r) or
-    ZZ (odd r) parity measured by CNOT, M, CNOT on the pair, no ancillas.
-
-    QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
-    only move where timeslice diagrams draw each qubit.
-    """
-    edges_color = "rgb"  # colour 0, 1, 2 as plots.py draws them: blue, red (orange), green
-    parity_meas = "XZ"  # even steps measure XX, odd steps ZZ
-
-
-    # Qubit coordinate -> its index in the circuit.
-    q2i = {}
-    for index, q in enumerate(qubit_kinds(distance)):
-        q2i[q] = index
-
-    # Qubit coordinate -> where diagrams draw it.
-    if hex_view:
-        q2pos = hex_positions(distance)
-    else:
-        q2pos = {}
-        for q in q2i:
-            q2pos[q] = q
-
-    # The two data qubits of every edge, grouped by colour. An edge leaves plaquette h at one corner and
-    # reaches plaquette `far` at the opposite corner; those two plaquettes share a colour, the edge's colour.
-    centers = hex_centers(distance)
-    edges: dict[str, list[list[complex]]] = {"r": [], "g": [], "b": []}
-    for h, colour in centers.items():
-        for e in EDGE_TYPES:
-            far = torus(h + e.hex_to_hex_delta, distance)
-            assert centers[far] == colour, "an edge must connect two plaquettes of the same colour"
-            d1 = torus(h + e.hex_to_qubit_delta, distance)  # where the edge leaves plaquette h
-            d2 = torus(far - e.hex_to_qubit_delta, distance)  # where it reaches plaquette far
-            edges[edges_color[colour]].append(sorted_complex([d1, d2]))
-
-    circuit = stim.Circuit()
-    for q, index in q2i.items():
-        circuit.append("QUBIT_COORDS", [index], [q2pos[q].real, q2pos[q].imag])
-
-
-
-    checks = [parity_check(parity_meas[r % 2], q2i[e.data[0]], q2i[e.data[1]], q2i[e.main], q2i[e.reff])
-              for e in edge_list(distance) if e.colour == step_colour(r)]
-    for layer in zip(*checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
-        for part in layer:
-            for name, targets in part:
-                circuit.append(name, targets)
-        circuit.append("TICK")
-    return circuit
-
-
-def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[list[tuple[str, list[int]]]]:
-    """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair.
-
-    The reference always starts in |0> and the pair is read out as one Z parity (MZZ), like spin blockade:
-    Z_syndrome * Z_reference, the reference adding its known +1. So only X or Y errors on the reference flip
-    the outcome; it is immune to dephasing.
-    X and Y: the syndrome (`main`, next to d0) starts in |+> and controls a P on d0, which kicks P_d0 back
-    onto its X. SWAP moves it into the dot next to d1, where it controls a P on d1 and picks up P_d1. A final
-    H on that dot (now `reff`) turns its X into the Z that MZZ reads.
-    Z: no Hadamards. The syndrome starts in |0> too, and the CXs point the other way: d0, then d1 (after the
-    SWAP) controls an X on the syndrome, copying Z_d0 Z_d1 straight into its Z.
-    Returns its layers, each a list of (gate, targets), for the caller to TICK between: `round_circuit`
-    runs layer k of every edge together. Leaves one measurement record.
-    """
-    if pauli == "Z":
-        reset, first, second, turn = [("R", [main, reff])], ("CX", [d0, main]), ("CX", [d1, reff]), []
-    else:
-        reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{pauli}", [main, d0]),
-                                      (f"C{pauli}", [reff, d1]), [[("H", [reff])]])
-    return [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
-
-
 def memory_circuit(distance: int, rounds: int,
-                   step: Callable[[int, int], stim.Circuit] = round_circuit, basis: str = "Z") -> stim.Circuit:
+                   step: Callable[[int, int], stim.Circuit], basis: str = "Z") -> stim.Circuit:
     """Noiseless memory experiment of the CSS honeycomb code in `basis` (Z or X), with DETECTORs and one
     OBSERVABLE.
 
-    Reset every data qubit to |0>, run `rounds` full periods of the 6-step schedule (see `round_circuit`),
+    Reset every data qubit to |0>, run `rounds` full periods of the 6-step schedule (see `step_colour`),
     then measure every data qubit in Z. In the X basis the same with X and Z swapped: reset to |+>, start the
     schedule three steps on (step s + 3 checks the same colour as step s, in the other Pauli), read out in X.
     A Z memory never sees Z errors, nor an X memory X errors, so thresholds take the worse of the two.
 
     `step(distance, r)` builds step r: any circuit that puts the parity of each colour `step_colour(r)` edge into one
     record, in `edge_list` order, keeps data qubit i at stim index i, and sets its own QUBIT_COORDS.
-    `round_circuit` by default; the src/single_ancilla/ schemes pass their own.
+    The two-ancilla scheme's is src/two_ancillas/pairs.py's `round_circuit`; the src/single_ancilla/ schemes have
+    their own.
 
     The physics in brief, which the comments below refer back to:
 
@@ -229,8 +144,11 @@ def memory_circuit(distance: int, rounds: int,
     # stim refers to earlier measurements relative to the latest one: measurement m is rec[m - count].
     count = 0
 
-    def detector(measurements: list[int]) -> None:
-        circuit.append("DETECTOR", [stim.target_rec(m - count) for m in measurements])
+    def detector(measurements: list[int], where: complex, step_index: int) -> None:
+        """DETECTOR over `measurements`, at coordinates (x, y, step): the plaquette centre (or qubit) it watches
+        and the step that completes it. Decoding ignores coordinates; drawings use them."""
+        circuit.append("DETECTOR", [stim.target_rec(m - count) for m in measurements],
+                       [where.real, where.imag, step_index])
 
     # What we last learned about each plaquette operator: (Pauli, plaquette centre) -> the measurements whose
     # XOR is its value, or None if it is unknown (never measured, or randomised since).
@@ -250,7 +168,7 @@ def memory_circuit(distance: int, rounds: int,
         pauli, other_pauli, colour = "XZ"[(s + offset) % 2], "ZX"[(s + offset) % 2], step_colour(s + offset)
         circuit += step(distance, s + offset)
 
-        # One measurement per edge of this colour, in `edge_list` order (as `round_circuit` makes them).
+        # One measurement per edge of this colour, in `edge_list` order (as every `step` makes them).
         # edge's two data qubits -> the number of its measurement.
         measured = {e.data: count + i
                     for i, e in enumerate(e for e in edge_list(distance) if e.colour == colour)}
@@ -264,7 +182,7 @@ def memory_circuit(distance: int, rounds: int,
             # This step's edges run along h's border: the 3 of them multiply to h's `pauli` plaquette.
             now = [m for pair, m in measured.items() if set(pair) <= corners[h]]
             if known[(pauli, h)] is not None:
-                detector(now + known[(pauli, h)])  # new value XOR old value should be 0
+                detector(now + known[(pauli, h)], h, s)  # new value XOR old value should be 0
             known[(pauli, h)] = now
 
         if pauli == basis:
@@ -277,12 +195,12 @@ def memory_circuit(distance: int, rounds: int,
 
     # Each last-step ZZ check vs the product of its two data qubits' readouts.
     for (d0, d1), m in measured.items():
-        detector([m, readout[d0], readout[d1]])
+        detector([m, readout[d0], readout[d1]], d0, 6 * rounds)
     # Z plaquettes of the other two colours are products of those checks, so the line above already
     # covers them. Colour-0 Z plaquettes aren't: compare their last value with their 6 corners' readouts.
     for h, c in colour_of.items():
         if c == colour:
-            detector(known[(basis, h)] + [readout[q] for q in corners[h]])
+            detector(known[(basis, h)] + [readout[q] for q in corners[h]], h, 6 * rounds)
 
     observable += [readout[q] for q in data if q.imag == 1]
     # ponytail: one of the torus's two logical qubits; add the vertical loop as observable 1 to catch both.

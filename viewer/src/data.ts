@@ -1,9 +1,9 @@
-// Loading and reading the result files under results/: LER CSVs (decode.py, two_ancillas/memory.py),
+// Loading and reading the result files under results/: LER CSVs (decode.py, shared/memory.py),
 // footprint CSVs (footprint.py) and threshold JSONs (thresholds.py).
 
 export const PCT = 100;
 
-/** One row of an LER or footprint CSV. `scheme` is missing in two_ancillas/memory.py's files, `qubits`
+/** One row of an LER or footprint CSV. `scheme` is missing in shared/memory.py's files, `qubits`
  *  only in footprint.py's. */
 export interface Row {
   scheme?: string;
@@ -79,7 +79,7 @@ export async function loadAll(): Promise<Results> {
     const rows = parseCSV(texts[i]);
     if (!rows.length || !("ler" in rows[0])) return;
     if ("qubits" in rows[0]) { foot[f] = rows; return; }
-    // two_ancillas/memory.py writes one file per distance and no scheme column
+    // shared/memory.py writes one file per distance and no scheme column
     const run = f.replace(/_d\d+\.csv$/, "").replace(/\.csv$/, "");
     for (const r of rows) {
       const scheme = r.scheme || "pairs";

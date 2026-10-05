@@ -51,7 +51,7 @@ from matplotlib.patches import FancyArrowPatch
 from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
 
-from decode import SCHEMES  # also puts src/two_ancillas on the path
+from decode import SCHEMES  # also puts src/shared on the path
 from floquet import memory_circuit
 from memory import logical_errors, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
@@ -61,7 +61,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
     """The noise model at size p in direction (theta, phi), as IBM's LogFail_of_d_p sets its error rates."""
-    p_g, p_t, p_r = p * np.cos(theta) * np.cos(phi), p * np.cos(theta) * np.sin(phi), p * np.sin(theta)
+    # max(0, .): on the octant's walls cos/sin of pi/2 can round to -1e-17, which Stim refuses as a probability
+    p_g, p_t, p_r = (max(0.0, x) for x in (p * np.cos(theta) * np.cos(phi), p * np.cos(theta) * np.sin(phi),
+                                            p * np.sin(theta)))
     return spin_qubit_noise_model(p_g1=2 * p_g / (1 + eta_g), p_g2=2 * p_g * eta_g / (1 + eta_g),
                                   p_t1=p_t / (1 + eta_t), p_t2=p_t * eta_t / (1 + eta_t), p_r=p_r)
 
@@ -191,7 +193,7 @@ def run(args, pool: Pool, partial: Path) -> dict:
     p_g_max, p_t_max, p_r_max = axes
 
     # (b): IBM's grid, (1-s-t) p_G + s p_T + t p_R over s + t <= 1, each scanned around its linear guess
-    grid = [((1 - s - t) * p_g_max, s * p_t_max, t * p_r_max)
+    grid = [(max(0.0, 1 - s - t) * p_g_max, s * p_t_max, t * p_r_max)
             for s in np.linspace(0, 1, args.nphi) for t in np.linspace(0, 1, args.nphi) if s + t <= 1 + 1e-9]
     spread = np.linspace(1 - args.delpth, 1 + args.delpth, args.num_p)
     surface = []
