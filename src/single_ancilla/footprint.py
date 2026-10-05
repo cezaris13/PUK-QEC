@@ -8,6 +8,10 @@ Each point is decode.py's memory experiment (d rounds at distance d) at p, decod
 exponentially in d, so a straight line through log(LER) vs d (points with at least one logical error) gives
 the d where it reaches --target; the qubit count there is the scheme's qubits per d^2 times d^2. Points with no
 errors are left out: at low p the largest distances need a lot of shots to show any.
+
+Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
+qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
+Lambda = LER(d) / LER(d + 2). --plot-only redraws the PNG from <out>.csv.
 """
 import argparse
 import csv
@@ -16,12 +20,12 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
-from decode import SCHEMES, STYLES
+from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks, read_rows
 from floquet import memory_circuit
 from memory import sweep
 from noise import NOISE_MODELS
-from drawing import COLORS
 
 
 def measure(schemes: list[str], distances: list[int], noise: str, eta: float, p: float, shots: int,
@@ -49,28 +53,43 @@ def qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float]
 
 
 def plot(rows: list[dict], target: float, png: Path) -> None:
-    fig, ax = plt.subplots(figsize=(6.5, 4.5))
-    for color, name in zip(COLORS, dict.fromkeys(r["scheme"] for r in rows)):
+    """LER vs qubits on square-root-log axes, where each scheme's fit is a straight line: points coloured by
+    distance with 95% Clopper-Pearson bars, marker = scheme, grey fit in the scheme's line style out to the
+    target (star), labelled with the qubits needed and Lambda = LER(d) / LER(d + 2)."""
+    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    fig.subplots_adjust(left=0.10, right=0.70)
+    schemes = list(dict.fromkeys(r["scheme"] for r in rows))
+    fits = []
+    for name in schemes:
         mine = [r for r in rows if r["scheme"] == name]
-        seen = [r for r in mine if r["errors"]]
         ls, marker = STYLES[name]
+        for r in mine:
+            if r["errors"]:
+                lo, hi = clopper_pearson(r["errors"], r["shots"])
+                ax.errorbar(r["qubits"], r["ler"], yerr=[[r["ler"] - lo], [hi - r["ler"]]], marker=marker,
+                            color=DISTANCE_COLOUR[r["distance"]], ms=6, lw=1, capsize=2, ls="none")
         fit = qubits_needed(mine, target)
-        label = name + (f": {fit[2]:,.0f} qubits" if fit else ": no fit")
-        ax.loglog([r["qubits"] for r in seen], [r["ler"] for r in seen], marker=marker, ls="none", color=color,
-                  ms=6, label=label)
         if fit:
             slope, intercept, needed = fit
             per_d2 = mine[0]["qubits"] / mine[0]["distance"] ** 2
             ds = np.linspace(min(r["distance"] for r in mine), math.sqrt(needed / per_d2), 50)
-            ax.loglog(per_d2 * ds ** 2, np.exp(intercept + slope * ds), ls=ls, color=color, lw=1.2)
-            ax.plot(needed, target, marker="*", color=color, ms=10)
-    ax.axhline(target, color="0.5", ls=":", lw=1, label=f"target LER {target:g}")
-    ax.set(xlabel="physical qubits (data + ancillas)", ylabel="logical error rate (d rounds)",
-           title=f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}, p = {rows[0]['p']:g}")
-    ax.grid(which="major", color="#e4e4e0", lw=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(frameon=False, fontsize=8)
-    fig.savefig(png, dpi=200, bbox_inches="tight")
+            ax.plot(per_d2 * ds ** 2, np.exp(intercept + slope * ds), ls=ls, color="0.35", lw=1)
+            ax.plot(needed, target, marker="*", color="0.35", ms=9)
+            fits.append(Line2D([], [], ls=ls, color="0.35",
+                               label=f"{name}: {needed:,.0f} qubits, Λ = {math.exp(-2 * slope):.1f}"))
+    ax.axhline(target, color="0.5", ls=":", lw=1)
+    ax.set_xscale("function", functions=(np.sqrt, np.square))
+    ax.set_yscale("log")
+    ax.set(xlabel="Total Physical Qubits", ylabel="Logical Error Rate (d rounds)")
+    ax.set_title(f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}, p = {rows[0]['p']:g};"
+                 f" dotted: target {target:g}", fontsize=10)
+    ax.grid(which="both", alpha=0.3, lw=0.5)
+    legend_blocks(ax, schemes, sorted({r["distance"] for r in rows}), lines=False)
+    second = ax.get_legend()
+    ax.legend(handles=fits, title="Linefits", fontsize=7, title_fontsize=8, loc="upper left",
+              bbox_to_anchor=(1.02, 0.2), frameon=False)
+    ax.add_artist(second)
+    fig.savefig(png, dpi=200)
     plt.close(fig)
 
 
@@ -85,14 +104,19 @@ def main() -> None:
     parser.add_argument("--max-errors", type=int, default=100, help="stop a point at this many logical errors")
     parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     args = parser.parse_args()
 
-    rows = measure(args.schemes, args.distances, args.noise, args.eta, args.p, args.shots, args.max_errors)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out.with_suffix(".csv"), "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(rows)
+    if args.plot_only:
+        rows = read_rows(args.out.with_suffix(".csv"))
+        args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
+    else:
+        rows = measure(args.schemes, args.distances, args.noise, args.eta, args.p, args.shots, args.max_errors)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out.with_suffix(".csv"), "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0])
+            writer.writeheader()
+            writer.writerows(rows)
     for name in args.schemes:
         fit = qubits_needed([r for r in rows if r["scheme"] == name], args.target)
         print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
