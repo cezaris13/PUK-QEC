@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "two_ancillas"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from floquet import (EDGE_TYPES, HEX_CORNERS, QUBIT_CORNERS, edge_ends, hex_centers, hex_positions, period,
                      qubits, sorted_complex, step_colour, torus)
-from plots import COLORS, QUBIT_KINDS, color_hexes, label_qubits, style_qubits, svg_png, window
+from plots import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, label_qubits, style_qubits, svg_png, window
 
 
 def edge_list(distance: int) -> list[tuple[int, complex, complex, complex]]:
@@ -120,7 +120,6 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
     swaps = [q2i[q] for pair in pairs for q in pair]
     moved = dict(pairs)  # data qubit's corner -> the ancilla spot its state is on after the swaps
     circuit.append("SWAP", swaps)
-    circuit.append("TICK")
     circuit.append("TICK")
     checks = [corner_check("XZ"[r % 2], q2i[moved[u]], q2i[moved[v]], q2i[u], q2i[a])
               for _, u, v, a in syndrome_checks(distance, rotated(r))]
@@ -280,14 +279,12 @@ def main() -> None:
     distance, sensors = args.distance, args.sensors
     check(distance)
     out = Path(__file__).resolve().parents[3] / "results" / "single_ancilla" / "method_a" / f"d{distance}"
-    out.mkdir(parents=True, exist_ok=True)
     for hex_view in (False, True):
-        view = "_hex" if hex_view else ""
-        layout_png(distance, hex_view, False, out / f"layout{view}.png")
-        layout_png(distance, hex_view, True, out / f"layout{view}_numbered.png")
-        for r in range(6):
-            svg_png(round_svg(distance, r, hex_view, False, sensors), out / f"round{r}{view}.png")
-            svg_png(round_svg(distance, r, hex_view, True, sensors), out / f"round{r}{view}_numbered.png")
+        for numbers in (False, True):
+            folder = drawing_dir(out, hex_view, numbers)
+            layout_png(distance, hex_view, numbers, folder / "layout.png")
+            for r in range(6):
+                svg_png(round_svg(distance, r, hex_view, numbers, sensors), folder / f"round{r}.png")
     print(f"wrote {out}/")
 
 
