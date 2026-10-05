@@ -50,6 +50,7 @@ from matplotlib import cm, colors
 from matplotlib.patches import FancyArrowPatch
 from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
+from tqdm import tqdm
 
 from decode import SCHEMES  # also puts src/shared on the path
 from floquet import memory_circuit
@@ -155,14 +156,15 @@ def run_tasks(pool: Pool, tasks: list[dict], partial: Path) -> list:
             done[row["key"]] = row["log_fail"]
     keys = [json.dumps(task, sort_keys=True) for task in tasks]
     todo = [(i, tasks[i]) for i, key in enumerate(keys) if key not in done]
-    print(f"{len(tasks) - len(todo)} of {len(tasks)} directions already done", flush=True)
-    with open(partial, "a") as f:
-        for n, (i, lf) in enumerate(pool.imap_unordered(_indexed, todo), 1):
+    with open(partial, "a") as f, tqdm(total=len(tasks), initial=len(tasks) - len(todo), unit="dir",
+                                        desc=tasks[0]["scheme"] if tasks else None) as bar:
+        for i, lf in pool.imap_unordered(_indexed, todo):
             done[keys[i]] = lf
             f.write(json.dumps({"key": keys[i], "log_fail": lf}) + "\n")
             f.flush()
-            print(f"  {n} / {len(todo)}: {tasks[i]['basis']} memory, threshold "
-                  f"{100 * threshold_from_log_fail(lf)[0]:.3f}%", flush=True)
+            bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
+                                f"{100 * threshold_from_log_fail(lf)[0]:.3f}%")
+            bar.update()
     return [done[key] for key in keys]
 
 
@@ -177,7 +179,7 @@ def run_both(pool: Pool, tasks: list[dict], partial: Path) -> list[dict]:
     return [combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
 
 
-def run(args, pool: Pool, partial: Path) -> dict:
+def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
     base = dict(scheme=args.scheme, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
                 retries=args.retries)
@@ -202,13 +204,13 @@ def run(args, pool: Pool, partial: Path) -> dict:
         surface.append(dict(base, **eta, theta=theta, phi=phi, errors=list(guess * spread)))
     # (c): pure gate noise vs eta_G, pure idling vs eta_T, from about 0 to twice the axis threshold
     biases = list(np.logspace(-2, 2, args.nbias))
-    wide = np.linspace(1 - args.bias_delpth, 1 + args.bias_delpth, args.num_p)[1:]
+    wide = np.linspace(1 - args.bias_delpth, 1 + args.bias_delpth, args.bias_num_p or args.num_p)[1:]
     g_bias = [dict(base, eta_g=b, eta_t=args.eta_t, theta=0, phi=0, errors=list(p_g_max * wide)) for b in biases]
     t_bias = [dict(base, eta_g=args.eta_g, eta_t=b, theta=0, phi=np.pi / 2, errors=list(p_t_max * wide))
               for b in biases]
 
-    groups = {"surface": surface, "g_bias": g_bias, "t_bias": t_bias}
-    print("surface and bias directions", flush=True)
+    groups = {"g_bias": g_bias, "t_bias": t_bias} if bias_only else {"surface": surface, "g_bias": g_bias, "t_bias": t_bias}
+    print("bias directions" if bias_only else "surface and bias directions", flush=True)
     results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks], partial))
     data = dict(settings=vars(args), axes=axes)
     for key, tasks in groups.items():
@@ -237,6 +239,8 @@ def plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> No
     them interpolated, both coloured by p_th."""
     pts = [(r["p_th"] * np.cos(r["theta"]) * np.cos(r["phi"]), r["p_th"] * np.cos(r["theta"]) * np.sin(r["phi"]),
             r["p_th"] * np.sin(r["theta"])) for r in rows if r["p_th"] > 0]
+    if not pts:  # e.g. a --bias-only run with no surface saved yet
+        return
     p_g, p_t, p_r = (100 * np.array(c) for c in zip(*pts))
     p_th = np.sqrt(p_g ** 2 + p_t ** 2 + p_r ** 2)
     norm = colors.Normalize(p_th.min(), p_th.max(), clip=True)
@@ -314,6 +318,7 @@ def main() -> None:
     parser.add_argument("--nphi", type=int, default=6, help="grid of (b): nphi (nphi + 1) / 2 directions")
     parser.add_argument("--nbias", type=int, default=9, help="eta values from 0.01 to 100 for (c)")
     parser.add_argument("--num-p", type=int, default=10, help="error rates per direction")
+    parser.add_argument("--bias-num-p", type=int, help="error rates per direction of (c), default --num-p")
     parser.add_argument("--delpth", type=float, default=0.5, help="(b) scans p_guess * (1 +- delpth)")
     parser.add_argument("--bias-delpth", type=float, default=1.0, help="(c) scans p_axis * (1 +- this)")
     parser.add_argument("--shots", type=int, default=20_000, help="most shots per point")
@@ -324,6 +329,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--out", type=Path, help="writes <out>.json and <out>.png")
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.json")
+    parser.add_argument("--bias-only", action="store_true",
+                        help="run only (c) and replace it in <out>.json, keeping its surface and axes")
     args = parser.parse_args()
 
     if args.out is None:
@@ -335,11 +342,21 @@ def main() -> None:
         data = json.loads(args.out.with_suffix(".json").read_text())
     else:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        partial = args.out.with_suffix(".partial.jsonl")
+        saved = args.out.with_suffix(".json")
+        old = json.loads(saved.read_text()) if args.bias_only and saved.exists() else None
+        if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
+            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
+                                                                                  old["axes"]))
+        # its own partial file, so a bias-only run never touches a full run's
+        partial = args.out.with_suffix(".bias.partial.jsonl" if args.bias_only else ".partial.jsonl")
         with Pool(args.workers) as pool:
-            data = run(args, pool, partial)
+            data = run(args, pool, partial, args.bias_only)
         data["settings"] = {k: str(v) if isinstance(v, Path) else v for k, v in data["settings"].items()}
-        args.out.with_suffix(".json").write_text(json.dumps(data))
+        if args.bias_only:
+            new = data
+            data = old or dict(new, surface=[])
+            data.update(g_bias=new["g_bias"], t_bias=new["t_bias"], bias_settings=new["settings"])
+        saved.write_text(json.dumps(data))
         partial.unlink()
     for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
         print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
