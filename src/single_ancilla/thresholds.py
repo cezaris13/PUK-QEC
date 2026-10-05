@@ -4,6 +4,7 @@ correction to spin qubits", arXiv:2306.17786): their figures (b) and (c), for th
 
     .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --distances 3 5 --nphi 6
     .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --plot-only   # redraw from the JSON
+    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --code x3z3   # the X3Z3 Floquet code
 
 Noise (noise.spin_qubit_noise_model) has three independent sources, gates p_G, idling p_T and readout p_R. A
 direction (theta, phi) and a size p set them, as in IBM's plot_utils.LogFail_of_d_p:
@@ -53,7 +54,7 @@ from scipy.interpolate import griddata
 from tqdm import tqdm
 
 from decode import SCHEMES  # also puts src/shared on the path
-from floquet import memory_circuit
+from floquet import CODES, memory_circuit
 from memory import logical_errors, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
 
@@ -70,9 +71,9 @@ def noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
 
 
 @lru_cache(maxsize=None)
-def circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str):
+def circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str, code: str = "css"):
     """The noiseless memory circuit (d rounds) and, for the uniform decoder, its fixed matcher: once per worker."""
-    circuit = memory_circuit(distance, distance, SCHEMES[scheme], basis)
+    circuit = memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
     return circuit, uniform_matcher(circuit) if decoder == "uniform" else None
 
 
@@ -82,7 +83,8 @@ def log_fail(task: dict) -> list:
     `shots` or `max_fail` logical errors."""
     out = []
     for d in task["distances"]:
-        circuit, matcher = circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"])
+        circuit, matcher = circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"],
+                                               task.get("code", "css"))
         rows = []
         for p in task["errors"]:
             if rows and rows[-1][1] >= task["max_fail_rate"]:
@@ -183,6 +185,8 @@ def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
     base = dict(scheme=args.scheme, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
                 retries=args.retries)
+    if args.code != "css":  # only then, so CSS tasks keep the keys their saved .partial.jsonl runs resume by
+        base["code"] = args.code
     eta = dict(eta_g=args.eta_g, eta_t=args.eta_t)
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
@@ -277,7 +281,8 @@ def plot(data: dict, png: Path) -> None:
         if pts:
             lo, hi = min(p for _, p in pts), max(p for _, p in pts)
             ax_b.add_artist(Arrow3D(*xyz(lo, hi), mutation_scale=10, lw=2, arrowstyle="<|-|>", color=color))
-    ax_b.set_title(f"(b) {s['scheme']}, d = {', '.join(map(str, s['distances']))}, "
+    code = {"css": "", "x3z3": "X$^3$Z$^3$ "}[s.get("code", "css")]
+    ax_b.set_title(f"(b) {code}{s['scheme']}, d = {', '.join(map(str, s['distances']))}, "
                    f"$\\eta_G$ = {s['eta_g']:g}, $\\eta_T$ = {s['eta_t']:g}", fontsize=10)
 
     ax_c = fig.add_subplot(1, 2, 2)
@@ -307,6 +312,7 @@ def plot(data: dict, png: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scheme", choices=SCHEMES, default="pairs")
+    parser.add_argument("--code", choices=CODES, default="css", help="css, or x3z3: the X3Z3 Floquet code")
     parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
     parser.add_argument("--decoder", choices=["uniform", "dem"], default="uniform",
                         help="uniform: IBM's bias-blind weights (default); dem: weights from the exact noise")
@@ -336,7 +342,7 @@ def main() -> None:
     if args.out is None:
         folder = (ROOT / "results" / "two_ancillas" if args.scheme == "pairs"
                   else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
-        args.out = folder / (f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
+        args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
     if args.plot_only:
         data = json.loads(args.out.with_suffix(".json").read_text())

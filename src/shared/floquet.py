@@ -102,17 +102,46 @@ def step_colour(r: int) -> int:
     return (r + 1) % 3
 
 
+#: "css": the CSS Floquet code. "x3z3": Setiawan & McLauchlan's X3Z3 Floquet code (arXiv:2411.04974), the CSS code
+#: with a Hadamard on every `shaded` data qubit, so its plaquettes are X^3 Z^3 and under Z-biased noise the
+#: syndromes pair up along each column.
+CODES = ("css", "x3z3")
+
+
+def shaded(q: complex) -> bool:
+    """X3Z3: data qubits in every other column (x = 3 mod 4) are Hadamard-rotated, each column a vertical strip
+    of the paper's Fig. 1(b): a plaquette has 3 corners in each of its two columns, so exactly one is shaded."""
+    return q.real % 4 == 3
+
+
+def check_paulis(pauli: str, data: Iterable[complex], code: str = "css") -> str:
+    """The Pauli each of `data` gets in a CSS `pauli` (X or Z) check: `pauli` itself, swapped X <-> Z on a
+    `shaded` qubit in the x3z3 code. So an X3Z3 edge reads XX or ZZ inside a column and XZ / ZX across."""
+    assert code in CODES, code
+    return "".join("ZX"["XZ".index(pauli)] if code == "x3z3" and shaded(q) else pauli for q in data)
+
+
+def aligned(checks: list[list]) -> list[tuple]:
+    """Layer k of every check together, as zip(*checks), but with shorter checks padded with empty layers at the
+    front so all end, and read out, in the same layer: an X3Z3 step mixes ZZ checks with XZ ones, which need
+    one more layer (the H). In the CSS code every check of a step has the same length and nothing changes."""
+    n = max(map(len, checks))
+    return list(zip(*[[[]] * (n - len(c)) + list(c) for c in checks]))
+
+
 def memory_circuit(distance: int, rounds: int,
-                   step: Callable[[int, int], stim.Circuit], basis: str = "Z") -> stim.Circuit:
+                   step: Callable[..., stim.Circuit], basis: str = "Z", code: str = "css") -> stim.Circuit:
     """Noiseless memory experiment of the CSS honeycomb code in `basis` (Z or X), with DETECTORs and one
-    OBSERVABLE.
+    OBSERVABLE. With `code` "x3z3", the X3Z3 code: the same circuit conjugated by a Hadamard on every `shaded`
+    data qubit, so those reset and read out in the other basis, and every check uses `check_paulis`. Records,
+    detectors and the observable are unchanged; only which physical errors flip them differs.
 
     Reset every data qubit to |0>, run `rounds` full periods of the 6-step schedule (see `step_colour`),
     then measure every data qubit in Z. In the X basis the same with X and Z swapped: reset to |+>, start the
     schedule three steps on (step s + 3 checks the same colour as step s, in the other Pauli), read out in X.
     A Z memory never sees Z errors, nor an X memory X errors, so thresholds take the worse of the two.
 
-    `step(distance, r)` builds step r: any circuit that puts the parity of each colour `step_colour(r)` edge into one
+    `step(distance, r, code=code)` builds step r: any circuit that puts the parity of each colour `step_colour(r)` edge into one
     record, in `edge_list` order, keeps data qubit i at stim index i, and sets its own QUBIT_COORDS.
     The two-ancilla scheme's is src/two_ancillas/pairs.py's `round_circuit`; the src/single_ancilla/ schemes have
     their own.
@@ -137,7 +166,11 @@ def memory_circuit(distance: int, rounds: int,
     circuit = stim.Circuit()
     other = "ZX"[basis == "Z"]  # the Pauli whose plaquettes start unknown
     offset = 3 if basis == "X" else 0  # step s of an X memory is the Z memory's step s + 3
-    circuit.append("R" if basis == "Z" else "RX", range(len(data)))
+    flip = [shaded(q) and code == "x3z3" for q in data]  # qubits reset and read out in the other basis
+    for name, targets in (("R", [i for i, f in enumerate(flip) if (basis == "Z") != f]),
+                          ("RX", [i for i, f in enumerate(flip) if (basis == "Z") == f])):
+        if targets:
+            circuit.append(name, targets)
     circuit.append("TICK")
 
     # Measurements are numbered 0, 1, 2, ... in the order they happen; `count` is how many so far.
@@ -166,7 +199,7 @@ def memory_circuit(distance: int, rounds: int,
     for s in range(6 * rounds):
         # Schedule rX gZ bX rZ gX bZ: Pauli alternates X, Z; colour cycles 1, 2, 0.
         pauli, other_pauli, colour = "XZ"[(s + offset) % 2], "ZX"[(s + offset) % 2], step_colour(s + offset)
-        circuit += step(distance, s + offset)
+        circuit += step(distance, s + offset, code=code)
 
         # One measurement per edge of this colour, in `edge_list` order (as every `step` makes them).
         # edge's two data qubits -> the number of its measurement.
@@ -189,7 +222,9 @@ def memory_circuit(distance: int, rounds: int,
             observable += [m for pair, m in measured.items() if in_band(pair)]
 
     # Final readout: every data qubit in Z. The last step (step 5 of the period) was ZZ on colour-0 edges.
-    circuit.append("M" if basis == "Z" else "MX", range(len(data)))
+    # One instruction per qubit keeps the records in data order with the bases mixed.
+    for i, f in enumerate(flip):
+        circuit.append("M" if (basis == "Z") != f else "MX", [i])
     readout = {q: count + i for i, q in enumerate(data)}
     count += len(data)
 

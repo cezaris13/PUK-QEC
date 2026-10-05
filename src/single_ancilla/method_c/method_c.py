@@ -22,19 +22,20 @@ import corner_readout
 
 
 def layers(pauli: str, u: int, v: int, a: int, s: int, *_) -> tuple[corner_readout.Layers, int, int]:
-    """Method C's gates for one check, then (syndrome, reference) as they start; the syndrome's reset, CPs and
-    H as in method_a."""
-    if pauli == "Z":
+    """Method C's gates for one check, then (syndrome, reference) as they start; `pauli` is two letters, P_u then
+    P_v ("XX", "ZZ", or the X3Z3 code's "XZ" / "ZX"); the syndrome's reset, CPs and H as in method_a."""
+    pu, pv = pauli
+    if pu == pv == "Z":
         reset, first, second, turn = [("R", [a, s])], ("CX", [u, a]), ("CX", [v, a]), []
     else:
-        reset, first, second, turn = ([("RX", [a]), ("R", [s])], (f"C{pauli}", [a, u]), (f"C{pauli}", [a, v]),
+        reset, first, second, turn = ([("RX", [a]), ("R", [s])], (f"C{pu}", [a, u]), (f"C{pv}", [a, v]),
                                       [[("H", [a])]])
     return [reset, [first], [second], *turn, [("SWAP", [s, u])], [("MZZ", [a, u])], [("SWAP", [s, u])]], a, s
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False):
+def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css"):
     """Step r for floquet.memory_circuit, as corner_readout.round_circuit builds it with these gates."""
-    return corner_readout.round_circuit(distance, r, layers, hex_view)
+    return corner_readout.round_circuit(distance, r, layers, hex_view, code)
 
 
 if __name__ == "__main__":

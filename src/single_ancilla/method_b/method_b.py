@@ -24,10 +24,11 @@ import corner_readout
 def syndrome_to_corner(pauli: str, u: int, v: int, a: int, ref: int) -> tuple[corner_readout.Layers, int, int]:
     """The syndrome a collects P_u P_v, swaps into u's spot and is read out against `ref` next to it, then u's
     data swaps back; (layers, syndrome, reference). Reset, CPs and H as in method_c.layers."""
-    if pauli == "Z":
+    pu, pv = pauli
+    if pu == pv == "Z":
         reset, first, second, turn = [("R", [a, ref])], ("CX", [u, a]), ("CX", [v, a]), []
     else:
-        reset, first, second, turn = ([("RX", [a]), ("R", [ref])], (f"C{pauli}", [a, u]), (f"C{pauli}", [a, v]),
+        reset, first, second, turn = ([("RX", [a]), ("R", [ref])], (f"C{pu}", [a, u]), (f"C{pv}", [a, v]),
                                       [[("H", [a])]])
     return [reset, [first], [second], *turn, [("SWAP", [a, u])], [("MZZ", [u, ref])], [("SWAP", [a, u])]], a, ref
 
@@ -41,9 +42,9 @@ def layers(pauli: str, u: int, v: int, a: int, s: int, o: int,
     return syndrome_to_corner(pauli, u, v, a, s if corner == 4 else o)
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False):
+def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css"):
     """Step r for floquet.memory_circuit, as corner_readout.round_circuit builds it with these gates."""
-    return corner_readout.round_circuit(distance, r, layers, hex_view)
+    return corner_readout.round_circuit(distance, r, layers, hex_view, code)
 
 
 if __name__ == "__main__":

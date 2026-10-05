@@ -7,7 +7,7 @@ from pathlib import Path
 import stim
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
-from floquet import Edge, edge_list, hex_positions, qubits, step_colour, torus
+from floquet import Edge, aligned, check_paulis, edge_list, hex_positions, qubits, step_colour, torus
 
 
 def thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
@@ -41,10 +41,11 @@ def qubit_kinds(distance: int) -> dict[complex, str]:
     return kinds
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
+def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css") -> stim.Circuit:
     """Step r of the 6-step schedule rX gZ bX rZ gX bZ: every edge of colour `step_colour(r)` has its XX (even r) or
     ZZ (odd r) parity measured through its spin ancilla pair (`parity_check`).
 
+    In the `code` "x3z3" each check uses floquet.check_paulis: XX / ZZ, or XZ / ZX across a column boundary.
     QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
     only move where timeslice diagrams draw each qubit.
     """
@@ -70,9 +71,9 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
 
 
 
-    checks = [parity_check(parity_meas[r % 2], q2i[e.data[0]], q2i[e.data[1]], q2i[main], q2i[reff])
+    checks = [parity_check(check_paulis(parity_meas[r % 2], e.data, code), q2i[e.data[0]], q2i[e.data[1]], q2i[main], q2i[reff])
               for e, main, reff in edge_ancillas(distance) if e.colour == step_colour(r)]
-    for layer in zip(*checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
+    for layer in aligned(checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
         for part in layer:
             for name, targets in part:
                 circuit.append(name, targets)
@@ -81,7 +82,8 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
 
 
 def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[list[tuple[str, list[int]]]]:
-    """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair.
+    """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair; a two-letter
+    `pauli` such as "XZ" measures X_d0 Z_d1 (the X3Z3 code's mixed checks).
 
     The reference always starts in |0> and the pair is read out as one Z parity (MZZ), like spin blockade:
     Z_syndrome * Z_reference, the reference adding its known +1. So only X or Y errors on the reference flip
@@ -89,14 +91,16 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[lis
     X and Y: the syndrome (`main`, next to d0) starts in |+> and controls a P on d0, which kicks P_d0 back
     onto its X. SWAP moves it into the dot next to d1, where it controls a P on d1 and picks up P_d1. A final
     H on that dot (now `reff`) turns its X into the Z that MZZ reads.
+    Mixed: as X, with each qubit's own controlled Pauli (CZ kicks Z_d back onto the syndrome's X).
     Z: no Hadamards. The syndrome starts in |0> too, and the CXs point the other way: d0, then d1 (after the
     SWAP) controls an X on the syndrome, copying Z_d0 Z_d1 straight into its Z.
     Returns its layers, each a list of (gate, targets), for the caller to TICK between: `round_circuit`
     runs layer k of every edge together. Leaves one measurement record.
     """
-    if pauli == "Z":
+    p0, p1 = pauli * 2 if len(pauli) == 1 else pauli
+    if p0 == p1 == "Z":
         reset, first, second, turn = [("R", [main, reff])], ("CX", [d0, main]), ("CX", [d1, reff]), []
     else:
-        reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{pauli}", [main, d0]),
-                                      (f"C{pauli}", [reff, d1]), [[("H", [reff])]])
+        reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{p0}", [main, d0]),
+                                      (f"C{p1}", [reff, d1]), [[("H", [reff])]])
     return [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]

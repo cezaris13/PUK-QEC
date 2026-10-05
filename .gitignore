@@ -2,7 +2,7 @@
 
 *.pyc
 __pycache__/
-results
+# results
 
 *.tex
 *.pdf

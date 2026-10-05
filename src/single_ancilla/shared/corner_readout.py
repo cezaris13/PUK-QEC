@@ -15,7 +15,7 @@ from pathlib import Path
 import stim
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[2] / "shared"), str(Path(__file__).resolve().parent)]
-from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, step_colour, torus
+from floquet import CODES, HEX_CORNERS, QUBIT_CORNERS, aligned, check_paulis, hex_centers, period, qubits, step_colour, torus
 from layout import edge_list, positions, qubit_kinds, style_ticks
 from drawing import color_hexes, drawing_dir, svg_png
 
@@ -46,21 +46,23 @@ def checks(distance: int, colour: int) -> list[tuple[int, complex, complex, comp
     return sorted(out, key=lambda check: check[0])
 
 
-def gates(scheme, pauli: str, check: tuple, q2i: dict[complex, int]) -> tuple[Layers, int, int]:
-    """`scheme`'s (layers, syndrome, reference) for one of `checks`, qubits as stim indices."""
-    _, *qs, corner = check
-    return scheme(pauli, *(q2i[q] for q in qs), corner)
+def gates(scheme, pauli: str, check: tuple, q2i: dict[complex, int], code: str = "css") -> tuple[Layers, int, int]:
+    """`scheme`'s (layers, syndrome, reference) for one of `checks`, qubits as stim indices; the scheme gets
+    two letters, P_u then P_v, from floquet.check_paulis (XX or ZZ in the CSS code)."""
+    _, u, v, *qs, corner = check
+    return scheme(check_paulis(pauli, (u, v), code), *(q2i[q] for q in (u, v, *qs)), corner)
 
 
-def round_circuit(distance: int, r: int, scheme, hex_view: bool = False) -> stim.Circuit:
+def round_circuit(distance: int, r: int, scheme, hex_view: bool = False, code: str = "css") -> stim.Circuit:
     """Step r: every colour step_colour(r) edge's XX (even r) or ZZ (odd r) parity into one record, in `edge_list` order,
-    `scheme`'s layer k of every check together, a TICK after each."""
+    `scheme`'s layer k of every check together, a TICK after each. In the `code` "x3z3" the checks' Paulis
+    are floquet.check_paulis'."""
     pos = positions(distance, hex_view)
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     circuit = stim.Circuit()
     for q, i in q2i.items():
         circuit.append("QUBIT_COORDS", [i], [pos[q].real, pos[q].imag])
-    for layer in zip(*[gates(scheme, "XZ"[r % 2], c, q2i)[0] for c in checks(distance, step_colour(r))]):
+    for layer in aligned([gates(scheme, "XZ"[r % 2], c, q2i, code)[0] for c in checks(distance, step_colour(r))]):
         for part in layer:
             for name, targets in part:
                 circuit.append(name, targets)
@@ -68,7 +70,7 @@ def round_circuit(distance: int, r: int, scheme, hex_view: bool = False) -> stim
     return circuit
 
 
-def roles(distance: int, r: int, scheme) -> list[tuple[list[str], list[str]]]:
+def roles(distance: int, r: int, scheme, code: str = "css") -> list[tuple[list[str], list[str]]]:
     """(kinds, labels) by stim index for each tick, as they stand before its gates: D<i> data qubit i, A<k> the
     ancilla of edge k, syndromes drawn as `main` and references as `reff`; each SWAP moves the pair's states,
     kinds and labels together."""
@@ -79,7 +81,7 @@ def roles(distance: int, r: int, scheme) -> list[tuple[list[str], list[str]]]:
     q2i = {q: i for i, q in enumerate(kinds)}
     for c in checks(distance, step_colour(r)):
         kind[gates(scheme, "XZ"[r % 2], c, q2i)[2]] = "reff"
-    circuit = round_circuit(distance, r, scheme)
+    circuit = round_circuit(distance, r, scheme, code=code)
     out = [(kind[:], label[:])]
     for inst in circuit:
         if inst.name == "SWAP":
@@ -95,7 +97,7 @@ def check(distance: int, scheme) -> None:
     """Each colour's checks cover every data qubit once with that colour's edges and never share an ancilla;
     every two-qubit gate joins a qubit spot to the ancilla spot of an edge next to it; each step reads its j-th
     check's parity into record j and puts every data qubit back; and the memory experiment's detectors are
-    deterministic with these steps."""
+    deterministic with these steps; all of it in every code of floquet.CODES."""
     import floquet
     edges = edge_list(distance)
     colours = {frozenset((d0, d1)): c for c, d0, d1, _ in edges}
@@ -106,33 +108,34 @@ def check(distance: int, scheme) -> None:
         assert sorted(q2i[q] for _, u, v, *_ in cs for q in (u, v)) == list(range(len(qubits(distance)))), colour
         assert {colours[frozenset((u, v))] for _, u, v, *_ in cs} == {colour}, colour
         assert len({anc for _, _, _, a, s, o, _ in cs for anc in (a, s, o)}) == 3 * len(cs), colour
-    for r in range(6):
-        circuit = round_circuit(distance, r, scheme)
-        for inst in circuit:
-            if inst.name in ("SWAP", "CX", "CY", "CZ", "MZZ"):
-                t = [x.value for x in inst.targets_copy()]
-                assert all(frozenset(p) in next_to for p in zip(t[::2], t[1::2])), (r, inst)
-        for j, (_, u, v, *_) in enumerate(checks(distance, step_colour(r))):
-            parity = stim.PauliString(circuit.num_qubits)
-            parity[q2i[u]] = parity[q2i[v]] = "XZ"[r % 2]
-            assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (r, j)
-        for d in qubits(distance):
-            single = stim.PauliString(circuit.num_qubits)
-            single[q2i[d]] = "XZ"[r % 2]
-            assert circuit.has_flow(stim.Flow(input=single, output=single)), (r, d)
-    step = lambda d, r: round_circuit(d, r, scheme)
-    floquet.memory_circuit(distance, 2, step).detector_error_model(allow_gauge_detectors=False)  # raises if not
+    for code in CODES:
+        for r in range(6):
+            circuit = round_circuit(distance, r, scheme, code=code)
+            for inst in circuit:
+                if inst.name in ("SWAP", "CX", "CY", "CZ", "MZZ"):
+                    t = [x.value for x in inst.targets_copy()]
+                    assert all(frozenset(p) in next_to for p in zip(t[::2], t[1::2])), (code, r, inst)
+            for j, (_, u, v, *_) in enumerate(checks(distance, step_colour(r))):
+                parity = stim.PauliString(circuit.num_qubits)
+                parity[q2i[u]], parity[q2i[v]] = check_paulis("XZ"[r % 2], (u, v), code)
+                assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (code, r, j)
+            for d in qubits(distance):
+                single = stim.PauliString(circuit.num_qubits)
+                single[q2i[d]] = check_paulis("XZ"[r % 2], [d], code)
+                assert circuit.has_flow(stim.Flow(input=single, output=single)), (code, r, d)
+        step = lambda d, r, code: round_circuit(d, r, scheme, code=code)
+        floquet.memory_circuit(distance, 2, step, code=code).detector_error_model(allow_gauge_detectors=False)
 
 
 def round_svg(distance: int, r: int, scheme, hex_view: bool, numbers: bool = False, away: bool = False,
-              sensors: bool = True) -> str:
+              sensors: bool = True, code: str = "css") -> str:
     """Timeslice view of step r, plaquettes coloured underneath, qubits drawn in their roles at each tick, a
-    square for each readout's sensor (see `readout_squares`)."""
-    circuit = round_circuit(distance, r, scheme, hex_view)
+    square for each readout's sensor (see `readout_squares`); `code` "x3z3" draws the X3Z3 code's step."""
+    circuit = round_circuit(distance, r, scheme, hex_view, code)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
-    ticks = roles(distance, r, scheme)
+    ticks = roles(distance, r, scheme, code)
     svg = style_ticks(svg, [k for k, _ in ticks], [lab for _, lab in ticks] if numbers else None)
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     right = {q2i[torus(h + 1, distance)] for h in hex_centers(distance)}
