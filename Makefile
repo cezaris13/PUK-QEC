@@ -10,6 +10,9 @@
 #   footprint   LER vs physical qubits at one p, per scheme
 #   thresholds  threshold surface and threshold vs bias for SCHEME
 #   thresholds-all    thresholds for every scheme in SCHEMES; thresholds-medium / thresholds-paper the same with more shots
+#   thresholds-x3z3   thresholds-all for the X3Z3 code (any of them takes CODE=x3z3 too)
+#   thresholds-x3z3-medium  thresholds-medium for the X3Z3 code
+#   x3z3        X3Z3 vs CSS Floquet code for every scheme: threshold vs bias, LER vs p, LER vs qubits
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -54,6 +57,8 @@ FOOTPRINT_DISTANCES = 3 5
 # --- Thresholds ---------------------------------------------------------------------------------------------
 # One scheme at a time: pairs, method_a, method_b or method_c.
 SCHEME = pairs
+# Floquet code: css, or x3z3 (Setiawan & McLauchlan); x3z3 files are named x3z3_<scheme>_...
+CODE = css
 THRESHOLD_DISTANCES = 3 5
 # Grid of the threshold surface: NPHI (NPHI + 1) / 2 directions, each one a full scan, so run time grows ~NPHI^2.
 NPHI = 6
@@ -70,6 +75,15 @@ THRESHOLD_BATCH = 2000
 MAX_FAIL = 2000
 # IBM's paper (arXiv:2306.17786) used NPHI=20 NBIAS~25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000
 # MAX_FAIL=30000: ~100x the defaults' run time.
+
+# --- X3Z3 vs CSS (x3z3) -------------------------------------------------------------------------------------
+# Every scheme in SCHEMES, both codes, under NOISE at each of X3Z3_ETAS; p from X3Z3_P_MIN to X3Z3_P_MAX
+# (X3Z3_NUM log-spaced) plus P, the p of the LER-vs-qubits figure. SHOTS per point and basis.
+X3Z3_DISTANCES = 3 5
+X3Z3_ETAS = 0.5 1 3 10 30 100 1000
+X3Z3_P_MIN = 2e-4
+X3Z3_P_MAX = 1.5e-2
+X3Z3_NUM = 12
 
 # --- Drawings -----------------------------------------------------------------------------------------------
 # Lattice size: 12*d^2 data qubits plus 2 spin ancillas on each of the 18*d^2 edges, so 1 is 12 + 36 qubits
@@ -174,12 +188,20 @@ $(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
 # Phony: the script names the files from its settings.
 thresholds:
-	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
+	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
 		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only)
 
 # thresholds for every scheme in SCHEMES, one after the other; stops at the first that fails.
 thresholds-all:
 	for s in $(SCHEMES); do $(MAKE) thresholds SCHEME=$$s || exit 1; done
+
+# thresholds-all for the X3Z3 code. For IBM's settings: make thresholds-paper CODE=x3z3.
+thresholds-x3z3:
+	$(MAKE) thresholds-all CODE=x3z3
+
+# thresholds-medium for the X3Z3 code. Several hours per scheme.
+thresholds-x3z3-medium:
+	$(MAKE) thresholds-medium CODE=x3z3
 
 # thresholds-all between the defaults and IBM's settings. Several hours per scheme.
 thresholds-medium:
@@ -188,6 +210,14 @@ thresholds-medium:
 # thresholds-all with IBM's settings (see THRESHOLD_SHOTS above). Roughly a day per scheme.
 thresholds-paper:
 	$(MAKE) thresholds-all NPHI=20 NBIAS=25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000 MAX_FAIL=30000
+
+# X3Z3 (Setiawan & McLauchlan, arXiv:2411.04974) against the CSS Floquet code for every scheme in SCHEMES:
+# results/single_ancilla/x3z3/<settings>.csv, and _bias.png (threshold and LER vs eta), _ler_eta<eta>.png and
+# _qubits_eta<eta>.png per eta. Phony: the script names its files and resumes from the CSV.
+x3z3:
+	$(PY) src/single_ancilla/x3z3.py --schemes $(SCHEMES) --noise $(NOISE) --distances $(X3Z3_DISTANCES) \
+		--etas $(X3Z3_ETAS) --p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --p-fixed $(P) \
+		--shots $(SHOTS) --out $(ONE)/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
 
 # ============================================================================================================
 # Viewer and housekeeping
@@ -205,4 +235,4 @@ clean:
 
 .DELETE_ON_ERROR:
 
-.PHONY: venv drawings plots decode footprint thresholds thresholds-all thresholds-medium thresholds-paper docs serve clean
+.PHONY: venv drawings plots decode footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 docs serve clean

@@ -53,10 +53,10 @@ def count_logical_errors(circuit: stim.Circuit, shots: int) -> int:
 
 
 def sweep(distance: int, rounds: int, noise: str, eta: float, ps: list[float], shots: int,
-          step, max_errors: int | None = None) -> list[dict]:
-    """One row per p: the noise model at that p on `memory_circuit(distance, rounds, step)`, decoded; up to
-    `shots` shots, fewer once `max_errors` logical errors are in (the row says how many ran)."""
-    circuit = memory_circuit(distance, rounds, step)
+          step, max_errors: int | None = None, code: str = "css") -> list[dict]:
+    """One row per p: the noise model at that p on `memory_circuit(distance, rounds, step, code=code)`, decoded;
+    up to `shots` shots, fewer once `max_errors` logical errors are in (the row says how many ran)."""
+    circuit = memory_circuit(distance, rounds, step, code=code)
     rows = []
     for p in tqdm(ps, desc=f"d={distance}"):
         errors, ran = logical_errors(add_noise(circuit, NOISE_MODELS[noise](p, eta)), shots, max_errors)

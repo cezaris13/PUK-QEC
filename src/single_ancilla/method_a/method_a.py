@@ -10,7 +10,8 @@ SRC = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(SRC / "shared"), str(SRC / "single_ancilla" / "shared")]
 from corner_readout import local_pairs, pixel_period, readout_squares
 from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, svg_png, window
-from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, sorted_complex, step_colour, torus
+from floquet import (CODES, HEX_CORNERS, QUBIT_CORNERS, aligned, check_paulis, hex_centers, memory_circuit, period, qubits,
+                     sorted_complex, step_colour, torus)
 from layout import edge_list, positions, qubit_kinds, style_ticks
 
 
@@ -53,12 +54,15 @@ def corner_check(pauli: str, d0: int, d1: int, syndrome: int, reference: int) ->
     """Measure P_d0 P_d1 onto `syndrome` from both of its sides, then read it out against `reference` by MZZ:
     pairs.parity_check's gates, without its SWAP since both data are next to the syndrome. Z: the syndrome
     starts in |0> and both data CX onto it. X and Y: it starts in |+>, controls a P on each, and H turns its
-    X into the Z that MZZ reads. The reference starts in |0>. Layers, for the caller to TICK between."""
-    if pauli == "Z":
+    X into the Z that MZZ reads. A two-letter `pauli` ("XZ": X_d0 Z_d1, the X3Z3 code's mixed checks) goes as
+    X with each qubit's own controlled Pauli. The reference starts in |0>. Layers, for the caller to TICK
+    between."""
+    p0, p1 = pauli * 2 if len(pauli) == 1 else pauli
+    if p0 == p1 == "Z":
         return [[("R", [syndrome, reference])], [("CX", [d0, syndrome])], [("CX", [d1, syndrome])],
                 [("MZZ", [syndrome, reference])]]
-    return [[("RX", [syndrome]), ("R", [reference])], [(f"C{pauli}", [syndrome, d0])],
-            [(f"C{pauli}", [syndrome, d1])], [("H", [syndrome])], [("MZZ", [syndrome, reference])]]
+    return [[("RX", [syndrome]), ("R", [reference])], [(f"C{p0}", [syndrome, d0])],
+            [(f"C{p1}", [syndrome, d1])], [("H", [syndrome])], [("MZZ", [syndrome, reference])]]
 
 
 def rotated(r: int) -> int:
@@ -68,14 +72,15 @@ def rotated(r: int) -> int:
     return (step_colour(r) + 1) % 3
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit:
+def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css") -> stim.Circuit:
     """Step r, a TICK after every layer:
     1. SWAP the data qubits and ancillas around every `rotated(r)` hex, rotating the data counterclockwise
        (see `ring_swaps`), then an empty TICK so diagrams show where everything is.
     2. On every other corner of those hexes, the syndrome measures the XX (even r) or ZZ (odd r) parity of
        the two data next to it, which together are every colour step_colour(r) edge, read out against the ancilla of
-       the corner's `rotated(r)` edge (see `syndrome_checks`, `corner_check`). Record j is the j-th check's
-       parity. The other corners idle.
+       the corner's `rotated(r)` edge (see `syndrome_checks`, `corner_check`); in the `code` "x3z3"
+       each check's Paulis are floquet.check_paulis of its two data. Record j is the j-th check's parity. The
+       other corners idle.
     3. The same SWAPs again, rotating everything back clockwise."""
     pos = positions(distance, hex_view)
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
@@ -87,9 +92,9 @@ def round_circuit(distance: int, r: int, hex_view: bool = False) -> stim.Circuit
     moved = dict(pairs)  # data qubit's corner -> the ancilla spot its state is on after the swaps
     circuit.append("SWAP", swaps)
     circuit.append("TICK")
-    checks = [corner_check("XZ"[r % 2], q2i[moved[u]], q2i[moved[v]], q2i[u], q2i[a])
+    checks = [corner_check(check_paulis("XZ"[r % 2], (u, v), code), q2i[moved[u]], q2i[moved[v]], q2i[u], q2i[a])
               for _, u, v, a in syndrome_checks(distance, rotated(r))]
-    for layer in zip(*checks):  # layer k of every check at once
+    for layer in aligned(checks):  # layer k of every check at once
         for part in layer:
             for name, targets in part:
                 circuit.append(name, targets)
@@ -122,7 +127,8 @@ def roles(distance: int, r: int, swapped: bool) -> tuple[list[str], list[str]]:
 def check(distance: int) -> None:
     """Each colour's swaps pair every data qubit exactly once, each with a different ancilla, and its checks
     are one whole colour class of real edges, each with its own reference; every step reads its j-th check's
-    parity into record j and leaves every data qubit back where it started."""
+    parity into record j and leaves every data qubit back where it started; in every code of floquet.CODES,
+    whose memory experiments have deterministic detectors."""
     colours = {frozenset((d0, d1)): c for c, d0, d1, _ in edge_list(distance)}
     for colour in range(3):
         pairs = ring_swaps(distance, colour)
@@ -132,26 +138,35 @@ def check(distance: int) -> None:
         assert sorted_complex(q for _, u, v, _ in checks for q in (u, v)) == qubits(distance), colour
         assert len({colours[frozenset((u, v))] for _, u, v, _ in checks}) == 1, colour
         assert len({a for *_, a in checks}) == len(checks), colour
+    for code in CODES:
+        for r in range(6):
+            check_step(distance, r, code)
+        memory_circuit(distance, 2, round_circuit, code=code).detector_error_model(
+            allow_gauge_detectors=False)  # raises if a detector is not deterministic
+
+
+def check_step(distance: int, r: int, code: str) -> None:
+    """`check`'s tests of step r in `code`."""
+    colours = {frozenset((d0, d1)): c for c, d0, d1, _ in edge_list(distance)}
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     n_data = len(qubits(distance))
-    for r in range(6):
-        circuit = round_circuit(distance, r)
-        checks = syndrome_checks(distance, rotated(r))
-        assert {colours[frozenset((u, v))] for _, u, v, _ in checks} == {step_colour(r)}, r  # the schedule's colour
-        # the diagram labels agree with the circuit: MZZ reads S<k>, A<k> of edge k; every data qubit once
-        _, label = roles(distance, r, True)
-        mzz = [t.value for inst in circuit if inst.name == "MZZ" for t in inst.targets_copy()]
-        assert [label[i] for i in mzz] == [f"{x}{k}" for k, *_ in checks for x in "SA"], r
-        assert sorted(lab for lab in label if lab[0] == "D") == sorted(f"D{i}" for i in range(n_data)), r
-        for j, (_, u, v, _) in enumerate(checks):
-            assert frozenset((u, v)) in colours, (r, j)  # neighbouring data
-            parity = stim.PauliString(circuit.num_qubits)
-            parity[q2i[u]] = parity[q2i[v]] = "XZ"[r % 2]
-            assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (r, j)  # record j reads it
-        for d in qubits(distance):  # one qubit at a time: MZZ copies a pair's parity onto its ancillas too
-            single = stim.PauliString(circuit.num_qubits)
-            single[q2i[d]] = "XZ"[r % 2]
-            assert circuit.has_flow(stim.Flow(input=single, output=single)), (r, d)  # back in place
+    circuit = round_circuit(distance, r, code=code)
+    checks = syndrome_checks(distance, rotated(r))
+    assert {colours[frozenset((u, v))] for _, u, v, _ in checks} == {step_colour(r)}, r  # the schedule's colour
+    # the diagram labels agree with the circuit: MZZ reads S<k>, A<k> of edge k; every data qubit once
+    _, label = roles(distance, r, True)
+    mzz = [t.value for inst in circuit if inst.name == "MZZ" for t in inst.targets_copy()]
+    assert [label[i] for i in mzz] == [f"{x}{k}" for k, *_ in checks for x in "SA"], r
+    assert sorted(lab for lab in label if lab[0] == "D") == sorted(f"D{i}" for i in range(n_data)), r
+    for j, (_, u, v, _) in enumerate(checks):
+        assert frozenset((u, v)) in colours, (r, j)  # neighbouring data
+        parity = stim.PauliString(circuit.num_qubits)
+        parity[q2i[u]], parity[q2i[v]] = check_paulis("XZ"[r % 2], (u, v), code)
+        assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (r, j)  # record j reads it
+    for d in qubits(distance):  # one qubit at a time: MZZ copies a pair's parity onto its ancillas too
+        single = stim.PauliString(circuit.num_qubits)
+        single[q2i[d]] = check_paulis("XZ"[r % 2], [d], code)
+        assert circuit.has_flow(stim.Flow(input=single, output=single)), (r, d)  # back in place
 
 
 def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) -> plt.Figure:
@@ -201,11 +216,12 @@ def layout_png(distance: int, hex_view: bool, numbers: bool, png: Path) -> None:
     plt.close(fig)
 
 
-def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, sensors: bool = True) -> str:
+def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, sensors: bool = True,
+              code: str = "css") -> str:
     """Timeslice view of step r, plaquettes coloured underneath; brick-wall or regular hexagons. Tick 0 is the
     swaps; from tick 1 up to the swaps back, qubits are drawn in their roles after the swaps (see `roles`),
     labelled with `numbers`, and with `sensors` a square for each readout's charge sensor."""
-    circuit = round_circuit(distance, r, hex_view)
+    circuit = round_circuit(distance, r, hex_view, code)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
