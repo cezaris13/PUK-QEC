@@ -4,8 +4,8 @@
 __pycache__/
 results
 
-*.png
 *.tex
+*.pdf
 
 viewer/node_modules/
 viewer/dist/

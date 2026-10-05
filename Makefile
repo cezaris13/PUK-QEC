@@ -9,7 +9,6 @@
 #   decode      every scheme in SCHEMES through the same memory experiment and decoder
 #   footprint   LER vs physical qubits at one p, per scheme
 #   thresholds  threshold surface and threshold vs bias for SCHEME
-#   docs        the LaTeX write-ups (needs tectonic)
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -20,8 +19,6 @@ PY = .venv/bin/python
 # ============================================================================================================
 
 # --- Memory experiment (plots, decode) ----------------------------------------------------------------------
-# Run time grows roughly as SHOTS x NUM x (number of distances) x d^3 (~d^2 qubits for d rounds), so the
-# largest distance dominates. notebooks/two_ancillas/memory_experiment.ipynb shows each setting at work.
 
 # Code distances. One CSV and one LER line each; rounds = distance.
 DISTANCES = 3 5 7
@@ -41,8 +38,7 @@ P_MAX = 1e-2
 NUM = 9
 
 # --- Readout schemes (decode, footprint) --------------------------------------------------------------------
-# pairs (two ancillas per edge), method_a, method_b, method_c (one ancilla per edge, hexes.pdf); see
-# src/single_ancilla/decode.py. One output file per set of schemes.
+# pairs (two ancillas per edge), method_a, method_b, method_c (one ancilla per edge, hexes.pdf)
 SCHEMES = pairs method_a method_b method_c
 
 # --- Footprint ----------------------------------------------------------------------------------------------
@@ -63,9 +59,6 @@ THRESHOLD_DISTANCES = 3 5
 # Lattice size: 12*d^2 data qubits plus 2 spin ancillas on each of the 18*d^2 edges, so 1 is 12 + 36 qubits
 # and 2 is 48 + 144; bigger gets hard to read.
 DRAW_DISTANCE = 1
-# Set NUMBERS=1 to label every qubit in the two-ancilla drawings: Di data, Sk / Rk syndrome / reference
-# ancilla. (Methods A/B/C always draw both plain and numbered.)
-NUMBERS = 1
 # Set SENSORS= (empty) to leave out the charge-sensor squares in the method A/B/C timeslices.
 SENSORS = 1
 
@@ -82,14 +75,12 @@ empty :=
 space := $(empty) $(empty)
 dashed = $(subst $(space),-,$(strip $(1)))
 
-# Output file names carry their settings, so runs with different settings never overwrite each other.
 RUN_NAME = $(NOISE)_eta$(ETA)_p$(P_MIN)-$(P_MAX)x$(NUM)_shots$(SHOTS)
 RUN = $(TWO)/$(RUN_NAME)
 CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
 DECODE = $(ONE)/$(RUN_NAME)_$(call dashed,$(SCHEMES))_decode
 FOOTPRINT = $(ONE)/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))_footprint
 
-# Sources each result depends on: change one and make reruns what it feeds.
 TWO_SRC = src/two_ancillas/floquet.py src/two_ancillas/noise.py src/two_ancillas/memory.py
 ONE_SRC = $(TWO_SRC) src/single_ancilla/shared.py \
 	src/single_ancilla/method_a/method_a.py src/single_ancilla/method_b/method_b.py src/single_ancilla/method_c/method_c.py
@@ -108,23 +99,25 @@ venv:
 # Drawings
 # ============================================================================================================
 
-# Every drawing at DRAW_DISTANCE, in one go:
-# - two ancillas (results/two_ancillas/): one period's timeslices (every TICK a tile, so one period only), and the
-#   qubit layout with the 6 steps' coloured timeslices, brick wall and regular hexagons (numbered with NUMBERS);
-# - one ancilla, methods A, B and C of hexes.pdf (results/single_ancilla/method_*/d<DRAW_DISTANCE>/): each one's
-#   6 steps, plain and numbered, with charge sensors unless SENSORS is empty; method A also draws the layouts.
-# Phony, so it always redraws and picks up NUMBERS / SENSORS.
+# Every drawing at DRAW_DISTANCE:
+# - two ancillas: one period's timeslices in
+#   results/two_ancillas/timeslices_d<DRAW_DISTANCE>.png, and the qubit layout with the 6 steps' coloured
+#   timeslices in results/two_ancillas/honeycomb_d<DRAW_DISTANCE>/;
+# - one ancilla, methods A, B and C of hexes.pdf: each one's 6 steps, with charge sensors unless SENSORS is
+#   empty, in results/single_ancilla/method_*/d<DRAW_DISTANCE>/; method A also draws the layout.
+# Each folder splits into rectangle/ (brick wall) and hex/ (regular hexagons), each into plain/ and numbered/
+# (every qubit labelled: Di data, Sk / Rk syndrome / reference ancilla), holding layout.png and round0-5.png.
+# Phony, so it always redraws and picks up SENSORS.
 drawings:
 	$(PY) src/two_ancillas/plots.py timeslices --distance $(DRAW_DISTANCE) --rounds 1 --png $(TWO)/timeslices_d$(DRAW_DISTANCE).png
-	$(PY) src/two_ancillas/plots.py honeycomb --distance $(DRAW_DISTANCE) $(if $(NUMBERS),--numbers) \
-		--out $(TWO)/honeycomb$(if $(NUMBERS),_numbered)_d$(DRAW_DISTANCE)
+	$(PY) src/two_ancillas/plots.py honeycomb --distance $(DRAW_DISTANCE) --out $(TWO)/honeycomb_d$(DRAW_DISTANCE)
 	for m in a b c; do \
 		$(PY) src/single_ancilla/method_$$m/method_$$m.py --distance $(DRAW_DISTANCE) --$(if $(SENSORS),,no-)sensors || exit 1; \
 	done
 
 # The plain layout docs/floquet_rounds.tex includes.
-$(TWO)/honeycomb_d%/layout.png: src/two_ancillas/floquet.py src/two_ancillas/plots.py
-	$(PY) src/two_ancillas/plots.py honeycomb --distance $* --out $(@D)
+$(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/two_ancillas/floquet.py src/two_ancillas/plots.py
+	$(PY) src/two_ancillas/plots.py honeycomb --distance $* --out $(TWO)/honeycomb_d$*
 
 # ============================================================================================================
 # Two ancillas per edge: LER vs p
@@ -166,29 +159,9 @@ thresholds:
 	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --distances $(THRESHOLD_DISTANCES)
 
 # ============================================================================================================
-# Write-ups (needs tectonic)
-# ============================================================================================================
-
-docs: docs/floquet_rounds.pdf docs/spin_x3z3_readout.pdf docs/decoding.pdf
-
-# Building the spin-ancilla Floquet rounds.
-docs/floquet_rounds.pdf: docs/floquet_rounds.tex docs/spin_subround.png $(TWO)/honeycomb_d1/layout.png
-	cd docs && tectonic floquet_rounds.tex
-
-# The handwritten notes of 6 July 2026 (the scan sits next to it) and ideas for adding them.
-docs/spin_x3z3_readout.pdf: docs/spin_x3z3_readout.tex docs/spin_x3z3_notes_2026-07-06.pdf
-	cd docs && tectonic spin_x3z3_readout.tex
-
-# How the memory circuit is decoded: DEM, decomposition, matching, with numbers computed from the repo.
-docs/decoding.pdf: docs/decoding.tex
-	cd docs && tectonic decoding.tex
-
-# ============================================================================================================
 # Viewer and housekeeping
 # ============================================================================================================
 
-# Interactive viewer of everything under results/: LER vs p for every scheme, threshold surfaces, footprints.
-# A Vite + React app in viewer/ (needs node); its dev server also serves results/.
 serve: viewer/node_modules
 	cd viewer && npm run dev
 
@@ -199,7 +172,6 @@ viewer/node_modules: viewer/package.json
 clean:
 	rm -rf .venv
 
-# A rule that fails leaves no target behind, so the next make retries it instead of calling it done.
 .DELETE_ON_ERROR:
 
 .PHONY: venv drawings plots decode footprint thresholds docs serve clean
