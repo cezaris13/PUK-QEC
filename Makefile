@@ -22,7 +22,7 @@ PY = .venv/bin/python
 
 # Code distances. One CSV and one LER line each; rounds = distance.
 DISTANCES = 3 5 7
-# Noise model from NOISE_MODELS in src/two_ancillas/noise.py: spin, HBD or MHBD.
+# Noise model from NOISE_MODELS in src/shared/noise.py: spin, HBD or MHBD.
 NOISE = spin
 # Bias eta = p_z / (p_x + p_y): 0.5 is depolarizing, large is mostly dephasing. spin biases every
 # channel; HBD/MHBD bias two-qubit gates and per-round idling, but keep 1-qubit gates depolarizing.
@@ -81,8 +81,9 @@ CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
 DECODE = $(ONE)/$(RUN_NAME)_$(call dashed,$(SCHEMES))_decode
 FOOTPRINT = $(ONE)/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))_footprint
 
-TWO_SRC = src/two_ancillas/floquet.py src/two_ancillas/noise.py src/two_ancillas/memory.py
-ONE_SRC = $(TWO_SRC) src/single_ancilla/shared.py \
+SHARED_SRC = src/shared/floquet.py src/shared/noise.py src/shared/memory.py
+TWO_SRC = $(SHARED_SRC) src/two_ancillas/pairs.py
+ONE_SRC = $(TWO_SRC) src/single_ancilla/shared/layout.py src/single_ancilla/shared/corner_readout.py \
 	src/single_ancilla/method_a/method_a.py src/single_ancilla/method_b/method_b.py src/single_ancilla/method_c/method_c.py
 
 # ============================================================================================================
@@ -116,7 +117,8 @@ drawings:
 	done
 
 # The plain layout docs/floquet_rounds.tex includes.
-$(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/two_ancillas/floquet.py src/two_ancillas/plots.py
+$(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/shared/floquet.py src/shared/drawing.py src/two_ancillas/pairs.py \
+		src/two_ancillas/plots.py
 	$(PY) src/two_ancillas/plots.py honeycomb --distance $* --out $(TWO)/honeycomb_d$*
 
 # ============================================================================================================
@@ -127,10 +129,10 @@ plots: $(RUN)_ler.png
 
 # One CSV per distance, d rounds each.
 $(RUN)_d%.csv: $(TWO_SRC)
-	$(PY) src/two_ancillas/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
+	$(PY) src/shared/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
 		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@
 
-$(RUN)_ler.png: $(CSVS) src/two_ancillas/plots.py
+$(RUN)_ler.png: $(CSVS) src/shared/drawing.py src/two_ancillas/plots.py
 	$(PY) src/two_ancillas/plots.py ler $(CSVS) --png $@
 
 # ============================================================================================================

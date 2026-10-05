@@ -1,6 +1,6 @@
-"""Shared by methods B and C (src/single_ancilla/method_b, src/single_ancilla/method_c): one ancilla per edge, and each check's
-syndrome is read out at a corner of a hex instead of the data walking around it (method A, src/single_ancilla/method_a,
-whose layout and drawing helpers this builds on).
+"""Methods B and C (src/single_ancilla/method_b, src/single_ancilla/method_c): one ancilla per edge (layout.py), and
+each check's syndrome is read out at a corner of a hex instead of the data walking around it (method A,
+src/single_ancilla/method_a, which uses only the sensor drawing helpers here).
 
 Step r checks the colour c = step_colour(r) edges from the hexes of colour c - 1 (on the red hex D0 D12 D13 D14 D2 D1 of
 the d = 2 layout: the green edges D0-D1, D12-D13, D2-D14). `checks` gives each one's qubits; a method is a
@@ -14,15 +14,14 @@ from pathlib import Path
 
 import stim
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "method_a"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "two_ancillas"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[2] / "shared"), str(Path(__file__).resolve().parent)]
 from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, step_colour, torus
-from method_a import edge_list, positions, qubit_kinds, style_ticks
-from plots import color_hexes, svg_png
+from layout import edge_list, positions, qubit_kinds, style_ticks
+from drawing import color_hexes, drawing_dir, svg_png
 
 Layers = list[list[tuple[str, list[int]]]]
 # Where every single-ancilla run writes: results/single_ancilla/, mirroring src/single_ancilla/.
-RESULTS = Path(__file__).resolve().parents[2] / "results" / "single_ancilla"
+RESULTS = Path(__file__).resolve().parents[3] / "results" / "single_ancilla"
 
 
 def checks(distance: int, colour: int) -> list[tuple[int, complex, complex, complex, complex, complex, int]]:
@@ -203,7 +202,7 @@ def readout_squares(svg: str, pairs: list[tuple[int, int]], per: complex, away: 
 
 def main(scheme, name: str, doc: str, away: bool = False) -> None:
     """`scheme`'s checks, then its 6 steps' timeslices, plain and numbered, brick-wall and hex view, into
-    results/single_ancilla/<name>/d<distance>/; `doc` is the --help text."""
+    results/single_ancilla/<name>/d<distance>/<rectangle|hex>/<plain|numbered>/; `doc` is the --help text."""
     parser = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--distance", type=int, default=2)
     parser.add_argument("--sensors", action=argparse.BooleanOptionalAction, default=True,
@@ -212,11 +211,10 @@ def main(scheme, name: str, doc: str, away: bool = False) -> None:
     distance, sensors = args.distance, args.sensors
     check(distance, scheme)
     out = RESULTS / name / f"d{distance}"
-    out.mkdir(parents=True, exist_ok=True)
     for hex_view in (False, True):
-        view = "_hex" if hex_view else ""
-        for r in range(6):
-            svg_png(round_svg(distance, r, scheme, hex_view, False, away, sensors), out / f"round{r}{view}.png")
-            svg_png(round_svg(distance, r, scheme, hex_view, True, away, sensors), out / f"round{r}{view}_numbered.png")
+        for numbers in (False, True):
+            folder = drawing_dir(out, hex_view, numbers)
+            for r in range(6):
+                svg_png(round_svg(distance, r, scheme, hex_view, numbers, away, sensors), folder / f"round{r}.png")
     print(f"wrote {out}/")
 

@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -7,45 +6,12 @@ import matplotlib.pyplot as plt
 import stim
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "two_ancillas"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from floquet import (EDGE_TYPES, HEX_CORNERS, QUBIT_CORNERS, edge_ends, hex_centers, hex_positions, period,
-                     qubits, sorted_complex, step_colour, torus)
-from plots import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, label_qubits, style_qubits, svg_png, window
-
-
-def edge_list(distance: int) -> list[tuple[int, complex, complex, complex]]:
-    """Every edge once: (colour, data qubit, data qubit, ancilla), the ancilla at the edge's midpoint."""
-    out = []
-    for h, colour in hex_centers(distance).items():
-        for e in EDGE_TYPES:
-            a, b = edge_ends(h, e, QUBIT_CORNERS)
-            out.append((colour, torus(a, distance), torus(b, distance), torus((a + b) / 2, distance)))
-    return out
-
-
-def qubit_kinds(distance: int) -> dict[complex, str]:
-    """Qubit -> "data" or "main" (the ancilla; drawn as plots.py draws a syndrome ancilla), in index order:
-    data qubits first, then the ancilla of each edge in `edge_list` order."""
-    kinds = {q: "data" for q in qubits(distance)}
-    edges = edge_list(distance)
-    kinds.update({anc: "main" for *_, anc in edges})
-    assert len(kinds) == len(qubits(distance)) + len(edges), "two ancillas on one spot"
-    return kinds
-
-
-def positions(distance: int, hex_view: bool) -> dict[complex, complex]:
-    """Qubit -> where it is drawn: its brick-wall coordinates, or on regular hexagons (ancillas still halfway)."""
-    if not hex_view:
-        return {q: q for q in qubit_kinds(distance)}
-    data = hex_positions(distance)
-    pos = {q: data[q] for q in qubits(distance)}
-    for h in hex_centers(distance):
-        for e in EDGE_TYPES:
-            a, b = edge_ends(h, e, QUBIT_CORNERS)
-            ha, hb = edge_ends(h, e, HEX_CORNERS)
-            pos[torus((a + b) / 2, distance)] = torus((ha + hb) / 2, distance)
-    return pos
+SRC = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(SRC / "shared"), str(SRC / "single_ancilla" / "shared")]
+from corner_readout import local_pairs, pixel_period, readout_squares
+from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, svg_png, window
+from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, period, qubits, sorted_complex, step_colour, torus
+from layout import edge_list, positions, qubit_kinds, style_ticks
 
 
 def ring_swaps(distance: int, colour: int) -> list[tuple[complex, complex]]:
@@ -85,7 +51,7 @@ def syndrome_checks(distance: int, colour: int) -> list[tuple[int, complex, comp
 
 def corner_check(pauli: str, d0: int, d1: int, syndrome: int, reference: int) -> list[list[tuple[str, list[int]]]]:
     """Measure P_d0 P_d1 onto `syndrome` from both of its sides, then read it out against `reference` by MZZ:
-    floquet.parity_check's gates, without its SWAP since both data are next to the syndrome. Z: the syndrome
+    pairs.parity_check's gates, without its SWAP since both data are next to the syndrome. Z: the syndrome
     starts in |0> and both data CX onto it. X and Y: it starts in |+>, controls a P on each, and H turns its
     X into the Z that MZZ reads. The reference starts in |0>. Layers, for the caller to TICK between."""
     if pauli == "Z":
@@ -151,21 +117,6 @@ def roles(distance: int, r: int, swapped: bool) -> tuple[list[str], list[str]]:
             kind[q2i[u]], label[q2i[u]] = "main", f"S{k}"
             kind[q2i[a]] = "reff"
     return kind, label
-
-
-def style_ticks(svg: str, kinds_per_tick: list[list[str]], labels_per_tick: list[list[str]] | None = None) -> str:
-    """plots.style_qubits, and plots.label_qubits given labels, with their own kinds and labels for each tick:
-    qubit i in tick t drawn as kinds_per_tick[t][i]."""
-    # ponytail: stim's dot ids carry the panel column, not the tick, so find each dot's panel by position
-    panels = {int(t): tuple(map(float, r)) for t, *r in re.findall(
-        r'id="tick_border:(\d+):[^"]*" x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"', svg)}
-
-    def dot(m: re.Match[str]) -> str:
-        x, y = float(m[1]), float(m[2])
-        t = next(t for t, (px, py, w, h) in panels.items() if px <= x <= px + w and py <= y <= py + h)
-        styled = style_qubits(m[0], kinds_per_tick[t])
-        return label_qubits(styled, labels_per_tick[t]) if labels_per_tick else styled
-    return re.sub(r'<circle id="qubit_dot:\d+:[^"]*" cx="([-\d.]+)" cy="([-\d.]+)"[^>]*/>', dot, svg)
 
 
 def check(distance: int) -> None:
@@ -261,7 +212,6 @@ def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, sens
     ticks = [roles(distance, r, False)] + [roles(distance, r, True)] * (circuit.num_ticks - 1)
     svg = style_ticks(svg, [k for k, _ in ticks], [lab for _, lab in ticks] if numbers else None)
     # Each check's sensor: on the far side of its corner u from the reference A<k>, inside the rotating hex.
-    from shared import local_pairs, pixel_period, readout_squares  # shared imports this module: import late
     svg = local_pairs(svg, i2pos, period(distance))
     if not sensors:
         return svg

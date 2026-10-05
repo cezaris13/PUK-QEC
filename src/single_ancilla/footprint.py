@@ -21,7 +21,7 @@ from decode import SCHEMES, STYLES
 from floquet import memory_circuit
 from memory import sweep
 from noise import NOISE_MODELS
-from plots import COLORS
+from drawing import COLORS
 
 
 def measure(schemes: list[str], distances: list[int], noise: str, eta: float, p: float, shots: int,
