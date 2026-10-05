@@ -9,6 +9,7 @@
 #   decode      every scheme in SCHEMES through the same memory experiment and decoder
 #   footprint   LER vs physical qubits at one p, per scheme
 #   thresholds  threshold surface and threshold vs bias for SCHEME
+#   thresholds-all    thresholds for every scheme in SCHEMES; thresholds-medium / thresholds-paper the same with more shots
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -54,6 +55,21 @@ FOOTPRINT_DISTANCES = 3 5
 # One scheme at a time: pairs, method_a, method_b or method_c.
 SCHEME = pairs
 THRESHOLD_DISTANCES = 3 5
+# Grid of the threshold surface: NPHI (NPHI + 1) / 2 directions, each one a full scan, so run time grows ~NPHI^2.
+NPHI = 6
+# BIAS_ONLY=1 reruns only the bias plot (c) and keeps the surface (b) already saved for these settings.
+BIAS_ONLY =
+# Points of the bias plot: NBIAS values of eta, log-spaced from 0.01 to 100.
+NBIAS = 9
+# Error rates per direction of the surface (NUM_P) and of the bias plot (BIAS_NUM_P).
+NUM_P = 10
+BIAS_NUM_P = 10
+# Each point runs batches of THRESHOLD_BATCH shots until THRESHOLD_SHOTS or MAX_FAIL logical errors.
+THRESHOLD_SHOTS = 20000
+THRESHOLD_BATCH = 2000
+MAX_FAIL = 2000
+# IBM's paper (arXiv:2306.17786) used NPHI=20 NBIAS~25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000
+# MAX_FAIL=30000: ~100x the defaults' run time.
 
 # --- Drawings -----------------------------------------------------------------------------------------------
 # Lattice size: 12*d^2 data qubits plus 2 spin ancillas on each of the 18*d^2 edges, so 1 is 12 + 36 qubits
@@ -158,7 +174,20 @@ $(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
 # Phony: the script names the files from its settings.
 thresholds:
-	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --distances $(THRESHOLD_DISTANCES)
+	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
+		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only)
+
+# thresholds for every scheme in SCHEMES, one after the other; stops at the first that fails.
+thresholds-all:
+	for s in $(SCHEMES); do $(MAKE) thresholds SCHEME=$$s || exit 1; done
+
+# thresholds-all between the defaults and IBM's settings. Several hours per scheme.
+thresholds-medium:
+	$(MAKE) thresholds-all NPHI=15 NBIAS=17 NUM_P=20 BIAS_NUM_P=40 THRESHOLD_SHOTS=100000 THRESHOLD_BATCH=2000 MAX_FAIL=10000
+
+# thresholds-all with IBM's settings (see THRESHOLD_SHOTS above). Roughly a day per scheme.
+thresholds-paper:
+	$(MAKE) thresholds-all NPHI=20 NBIAS=25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000 MAX_FAIL=30000
 
 # ============================================================================================================
 # Viewer and housekeeping
@@ -176,4 +205,4 @@ clean:
 
 .DELETE_ON_ERROR:
 
-.PHONY: venv drawings plots decode footprint thresholds docs serve clean
+.PHONY: venv drawings plots decode footprint thresholds thresholds-all thresholds-medium thresholds-paper docs serve clean
