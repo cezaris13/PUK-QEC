@@ -1,5 +1,4 @@
 import argparse
-import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -8,6 +7,7 @@ from matplotlib.patches import Patch
 from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, label_qubits, style_qubits, svg_png, window
 from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, memory_circuit, period
 from pairs import positions, qubit_kinds, round_circuit
+from writing.results_csv import read_rows
 
 
 def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) -> plt.Figure:
@@ -154,10 +154,7 @@ def _honeycomb_pngs(distance: int, out: Path) -> None:
 
 
 def _ler_png(csv_paths: list[Path], png: Path) -> None:
-    runs = []
-    for path in csv_paths:
-        with open(path, newline="") as f:
-            runs.append(list(csv.DictReader(f)))
+    runs = [read_rows(path) for path in csv_paths]
     fig, ax = plt.subplots(figsize=(6, 4.5))
     draw_ler(ax, runs)
     fig.savefig(png, dpi=200, bbox_inches="tight")

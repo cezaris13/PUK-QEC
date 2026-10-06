@@ -43,7 +43,6 @@ share; --plot-only replays the scans from the CSV alone, or draws <name>_thresho
 # bias lists of generate_Gbias_plot.py / generate_Tbias_plot.py, and Arrow3D and the bias figure of
 # Threshold_surfaces_demo.ipynb. Modified: rewritten for this repo's circuits, noise and decoder.
 import argparse
-import csv
 import os
 from multiprocessing import Lock
 from functools import lru_cache
@@ -60,8 +59,9 @@ from tqdm import tqdm
 
 from physical_to_logical import SCHEMES
 from floquet import CODES, memory_circuit
-from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher, warn_stale
+from memory import logical_errors, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
+from writing.results_csv import append_row, point_key, read_rows, warn_stale, write_rows
 
 ROOT = Path(__file__).resolve().parents[2]
 # <name>_thresholds.csv: one row per direction; group is axis (the three axis thresholds aiming the grid, in
@@ -341,10 +341,7 @@ def _write_summary(data: dict, path: Path) -> None:
     rows = [dict(common, group="axis", theta=t, phi=f, eta_g=s["eta_g"], eta_t=s["eta_t"], p_th=a)
             for (t, f), a in zip(AXES, data["axes"])]
     rows += [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_rows(path, SUMMARY_FIELDS, rows)
 
 
 def _data_from_summary(rows: list[dict]) -> dict:

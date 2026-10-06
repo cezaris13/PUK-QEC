@@ -8,8 +8,8 @@ edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (
 floquet.memory_circuit, so they share every detector and the observable, and only their step circuits (and so
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
 a graph, matched by PyMatching (docs/decoding.pdf). One CSV row per (scheme, distance, p), appended as each
-finishes (memory.run_points), so rerunning the same command after a crash only runs the points still missing;
-then a plot. --sources warns if that code changed since <out>.csv was written.
+finishes (writing.results_csv.run_points), so rerunning the same command after a crash only runs the points
+still missing; then a plot. --sources warns if that code changed since <out>.csv was written.
 """
 import argparse
 import os
@@ -23,8 +23,9 @@ from scipy.stats import beta
 
 import floquet
 import pairs
-from memory import logical_errors, read_rows, run_points
+from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
+from writing.results_csv import read_rows, run_points
 
 import method_a
 import method_b
