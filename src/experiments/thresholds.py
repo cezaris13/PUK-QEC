@@ -217,10 +217,17 @@ def _log_fail(task: dict) -> list:
     return out
 
 
-def _threshold_from_log_fail(log_fail_d_p: list, cutoff: float = 0.495) -> tuple[float, float]:
+# A p only counts towards the crossing when every distance saw at least this many logical errors there
+# (LER >= MIN_ERRORS / shots): below that, counting noise alone puts d = 5 above d = 3 now and then, and IBM's
+# rule took the lowest such p as the threshold, which gave the dips in the surfaces and bias plots.
+MIN_ERRORS = 10
+
+
+def _threshold_from_log_fail(log_fail_d_p: list, min_ler: float = 0.0, cutoff: float = 0.495) -> tuple[float, float]:
     """(p_th, error), (0, 0) if the curves never cross: IBM's Threshold_from_LogFail. Below threshold the
     LER falls with d at every p, above it rises; p_th sits between the highest p of the first kind and the
-    lowest of the second, nearer the one whose curves are closer together."""
+    lowest of the second, nearer the one whose curves are closer together. Only p where every distance's LER
+    is at least `min_ler` (and above 0) count."""
     n = min(next((i for i, (_, ler) in enumerate(rows) if ler >= cutoff), len(rows) - 1)
             for _, rows in log_fail_d_p)
     errors = [log_fail_d_p[-1][1][i][0] for i in range(n)]
@@ -228,7 +235,7 @@ def _threshold_from_log_fail(log_fail_d_p: list, cutoff: float = 0.495) -> tuple
     for i, p in enumerate(errors):
         lers = [rows[i][1] for _, rows in log_fail_d_p]
         spread.append(max(lers) - min(lers))
-        if min(lers) > 0:  # a distance with no failures yet means far below threshold
+        if min(lers) > 0 and min(lers) >= min_ler:  # too few failures to tell the distances apart
             if lers[::-1] == sorted(lers):
                 below.append(p)
             if lers == sorted(lers):
@@ -249,16 +256,16 @@ def _scan(task: dict) -> list:
     for _ in range(task["retries"] + 1):
         errors = [p for p in errors if p <= 0.3]
         lf = _log_fail(dict(task, errors=errors))
-        if not errors or _threshold_from_log_fail(lf)[0] > 0:
+        if not errors or _threshold_from_log_fail(lf, MIN_ERRORS / task["shots"])[0] > 0:
             break
         factor = 1 / 2.5 if lf[0][1][0][1] >= 0.1 else 2.5
         errors = [p * factor for p in errors]
     return lf
 
 
-def _combine(lf_z: list, lf_x: list) -> dict:
+def _combine(lf_z: list, lf_x: list, min_ler: float) -> dict:
     """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's."""
-    (z, z_err), (x, x_err) = _threshold_from_log_fail(lf_z), _threshold_from_log_fail(lf_x)
+    (z, z_err), (x, x_err) = _threshold_from_log_fail(lf_z, min_ler), _threshold_from_log_fail(lf_x, min_ler)
     p_th, err = min(((t, e) for t, e in ((z, z_err), (x, x_err)) if t > 0), default=(0.0, 0.0))
     return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x)
 
@@ -275,7 +282,7 @@ def _run_tasks(pool: Pool, tasks: list[dict]) -> list:
         for i, lf in pool.imap_unordered(_indexed, enumerate(tasks)):
             out[i] = lf
             bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
-                                f"{100 * _threshold_from_log_fail(lf)[0]:.3f}%")
+                                f"{100 * _threshold_from_log_fail(lf, MIN_ERRORS / tasks[i]['shots'])[0]:.3f}%")
             bar.update()
     return out
 
@@ -288,7 +295,7 @@ def _direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]
 def _run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
     """Each task in the Z and the X basis, `_combine`d."""
     lfs = _run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"])
-    return [_combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
+    return [_combine(z, x, MIN_ERRORS / task["shots"]) for task, z, x in zip(tasks, lfs[::2], lfs[1::2])]
 
 
 def _run(args, pool: Pool, bias_only: bool = False) -> dict:
@@ -340,7 +347,8 @@ def _write_summary(data: dict, path: Path) -> None:
                   distances=" ".join(map(str, s["distances"])))
     rows = [dict(common, group="axis", theta=t, phi=f, eta_g=s["eta_g"], eta_t=s["eta_t"], p_th=a)
             for (t, f), a in zip(AXES, data["axes"])]
-    rows += [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
+    # dict(r, ...): rows kept from a saved summary (--bias-only) already carry group and the common columns
+    rows += [dict(r, group=g, **common) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
     write_rows(path, SUMMARY_FIELDS, rows)
 
 

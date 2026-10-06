@@ -4,15 +4,18 @@
 #
 # Targets:
 #   venv        Python environment in .venv (run once)
+#   paths       put src/'s module folders on .venv's import path (venv runs it; rerun if they move)
 #   drawings    every layout and timeslice picture, two ancillas and methods A/B/C
 #   plots       two-ancilla LER vs p, one CSV per distance
-#   decode      every scheme in SCHEMES through the same memory experiment and decoder
-#   footprint   LER vs physical qubits at one p, per scheme
+#   physical-to-logical  LER vs p for every scheme in SCHEMES through the same memory experiment and decoder
+#   footprint   LER vs physical qubits at one p, per scheme (and per code in FOOTPRINT_CODES)
 #   thresholds  threshold surface and threshold vs bias for SCHEME
 #   thresholds-all    thresholds for every scheme in SCHEMES; thresholds-medium / thresholds-paper the same with more shots
 #   thresholds-x3z3   thresholds-all for the X3Z3 code (any of them takes CODE=x3z3 too)
 #   thresholds-x3z3-medium  thresholds-medium for the X3Z3 code
-#   x3z3        X3Z3 vs CSS Floquet code for every scheme: threshold vs bias, LER vs p, LER vs qubits
+#   x3z3        x3z3-bias and x3z3-ler: X3Z3 vs CSS Floquet code for every scheme
+#   x3z3-bias   threshold and LER vs bias
+#   x3z3-ler    LER vs p per bias
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -22,7 +25,7 @@ PY = .venv/bin/python
 # Parameters
 # ============================================================================================================
 
-# --- Memory experiment (plots, decode) ----------------------------------------------------------------------
+# --- Memory experiment (plots, physical-to-logical) ---------------------------------------------------------
 
 # Code distances. One CSV and one LER line each; rounds = distance.
 DISTANCES = 3 5 7
@@ -41,7 +44,7 @@ P_MAX = 1e-2
 # Number of p values from P_MIN to P_MAX, both included, log-spaced: 9 over two decades = 4 per decade.
 NUM = 9
 
-# --- Readout schemes (decode, footprint) --------------------------------------------------------------------
+# --- Readout schemes (physical-to-logical, footprint) -------------------------------------------------------
 # pairs (two ancillas per edge), method_a, method_b, method_c (one ancilla per edge, hexes.pdf)
 SCHEMES = pairs method_a method_b method_c
 
@@ -53,6 +56,8 @@ TARGET = 1e-6
 FOOTPRINT_SHOTS = 10000000
 # Distances for the fit: d = 5 already needs ~10^7 shots at p = 1e-3 to see errors, d = 7 far more.
 FOOTPRINT_DISTANCES = 3 5
+# Floquet codes, css and/or x3z3: with both, one plot compares them (X3Z3 filled markers, CSS hollow).
+FOOTPRINT_CODES = css
 
 # --- Thresholds ---------------------------------------------------------------------------------------------
 # One scheme at a time: pairs, method_a, method_b or method_c.
@@ -78,7 +83,7 @@ MAX_FAIL = 2000
 
 # --- X3Z3 vs CSS (x3z3) -------------------------------------------------------------------------------------
 # Every scheme in SCHEMES, both codes, under NOISE at each of X3Z3_ETAS; p from X3Z3_P_MIN to X3Z3_P_MAX
-# (X3Z3_NUM log-spaced) plus P, the p of the LER-vs-qubits figure. SHOTS per point and basis.
+# (X3Z3_NUM log-spaced); x3z3-bias adds P, the p of its LER vs bias. SHOTS per point and basis.
 X3Z3_DISTANCES = 3 5
 X3Z3_ETAS = 0.5 1 3 10 30 100 1000
 X3Z3_P_MIN = 2e-4
@@ -108,8 +113,8 @@ dashed = $(subst $(space),-,$(strip $(1)))
 RUN_NAME = $(NOISE)_eta$(ETA)_p$(P_MIN)-$(P_MAX)x$(NUM)_shots$(SHOTS)
 RUN = $(TWO)/$(RUN_NAME)
 CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
-DECODE = $(ONE)/$(RUN_NAME)_$(call dashed,$(SCHEMES))_decode
-FOOTPRINT = $(ONE)/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))_footprint
+PHYSICAL_TO_LOGICAL = $(ONE)/$(RUN_NAME)_$(call dashed,$(SCHEMES))_physical_to_logical
+FOOTPRINT = $(ONE)/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))$(if $(filter-out css,$(FOOTPRINT_CODES)),_$(call dashed,$(FOOTPRINT_CODES)))_footprint
 
 SHARED_SRC = src/shared/floquet.py src/shared/noise.py src/shared/memory.py
 TWO_SRC = $(SHARED_SRC) src/two_ancillas/pairs.py
@@ -125,6 +130,16 @@ venv:
 	.venv/bin/pip install -U pip
 	.venv/bin/pip install -r requirements.txt
 	.venv/bin/python -m ipykernel install --user --name floquet_code
+	$(MAKE) paths
+
+# Every module is imported by its bare name (import floquet, import pairs, ...): a .pth file in the venv lists the
+# folders holding them, so scripts and notebooks need no sys.path lines.
+SRC_DIRS = src/shared src/two_ancillas src/experiments src/single_ancilla/shared \
+	src/single_ancilla/method_a src/single_ancilla/method_b src/single_ancilla/method_c
+
+paths:
+	for d in $(SRC_DIRS); do echo "$(CURDIR)/$$d"; done \
+		> "$$($(PY) -c 'import site; print(site.getsitepackages()[0])')/floquet_code.pth"
 
 # ============================================================================================================
 # Drawings
@@ -157,9 +172,9 @@ $(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/shared/floquet.py src/shared
 
 plots: $(RUN)_ler.png
 
-# One CSV per distance, d rounds each.
-# Always run: memory.py appends each p as it finishes and skips those already in the CSV, so a cut-short run picks
-# up where it stopped (it warns if TWO_SRC changed since; delete the CSV to start over). Precious: kept on Ctrl-C.
+# One CSV per distance, d rounds each. Always run: memory.py appends each p as it finishes and skips those already
+# in the CSV, so a cut-short run picks up where it stopped (it warns if TWO_SRC changed since; delete the CSV to
+# start over). Precious: make keeps it on Ctrl-C.
 $(RUN)_d%.csv: FORCE
 	$(PY) src/shared/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
 		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@ --sources $(TWO_SRC)
@@ -175,24 +190,24 @@ $(RUN)_ler.png: $(CSVS) src/shared/drawing.py src/two_ancillas/plots.py
 
 # Every scheme in SCHEMES through the same memory experiment and decoder: one CSV and one plot, all
 # DISTANCES, colour = distance, line style = scheme.
-decode: $(DECODE).png
+physical-to-logical: $(PHYSICAL_TO_LOGICAL).png
 
-$(DECODE).png: src/single_ancilla/decode.py $(ONE_SRC)
-	$(PY) src/single_ancilla/decode.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(DECODE) --sources $(ONE_SRC)
+$(PHYSICAL_TO_LOGICAL).png: src/experiments/physical_to_logical.py $(ONE_SRC)
+	$(PY) src/experiments/physical_to_logical.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
+		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(PHYSICAL_TO_LOGICAL) --sources $(ONE_SRC)
 
 # LER vs physical qubits at P for each of SCHEMES, and the qubits each needs for LER TARGET.
 footprint: $(FOOTPRINT).png
 
-$(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $(ONE_SRC)
-	$(PY) src/single_ancilla/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
+$(FOOTPRINT).png: src/experiments/footprint.py src/experiments/physical_to_logical.py $(ONE_SRC)
+	$(PY) src/experiments/footprint.py --schemes $(SCHEMES) --codes $(FOOTPRINT_CODES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
 		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT) --sources $(ONE_SRC)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
 # Phony: the script names the files from its settings.
 thresholds:
-	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
+	$(PY) src/experiments/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
 		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only) \
 		--sources $(ONE_SRC)
 
@@ -216,13 +231,24 @@ thresholds-medium:
 thresholds-paper:
 	$(MAKE) thresholds-all NPHI=20 NBIAS=25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000 MAX_FAIL=30000
 
-# X3Z3 (Setiawan & McLauchlan, arXiv:2411.04974) against the CSS Floquet code for every scheme in SCHEMES:
-# results/single_ancilla/x3z3/<settings>.csv, and _bias.png (threshold and LER vs eta), _ler_eta<eta>.png and
-# _qubits_eta<eta>.png per eta. Phony: the script names its files and resumes from the CSV.
+# X3Z3 (Setiawan & McLauchlan, arXiv:2411.04974) against the CSS Floquet code for every scheme in SCHEMES. Both
+# share one sweep, results/single_ancilla/x3z3/<settings>.csv, each reusing the other's points: x3z3-bias writes
+# <settings>_bias.png (threshold and LER at P vs eta), x3z3-ler <settings>_ler_eta<eta>.png per eta. For LER vs
+# qubits: make footprint FOOTPRINT_CODES="css x3z3". Phony: the scripts name their files and resume from the CSV.
+X3Z3_ARGS = --schemes $(SCHEMES) --noise $(NOISE) --distances $(X3Z3_DISTANCES) --etas $(X3Z3_ETAS) \
+	--p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --shots $(SHOTS) \
+	--out $(ONE)/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
+
+# One after the other: x3z3-bias simulates the shared CSV, then x3z3-ler finds every point there.
 x3z3:
-	$(PY) src/single_ancilla/x3z3.py --schemes $(SCHEMES) --noise $(NOISE) --distances $(X3Z3_DISTANCES) \
-		--etas $(X3Z3_ETAS) --p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --p-fixed $(P) \
-		--shots $(SHOTS) --out $(ONE)/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
+	$(MAKE) x3z3-bias
+	$(MAKE) x3z3-ler
+
+x3z3-bias:
+	$(PY) src/experiments/x3z3_bias.py $(X3Z3_ARGS) --p-fixed $(P)
+
+x3z3-ler:
+	$(PY) src/experiments/x3z3_ler.py $(X3Z3_ARGS)
 
 # ============================================================================================================
 # Viewer and housekeeping
@@ -240,4 +266,4 @@ clean:
 
 .DELETE_ON_ERROR:
 
-.PHONY: venv drawings plots decode footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 docs serve clean
+.PHONY: venv paths drawings plots physical-to-logical footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 x3z3-bias x3z3-ler docs serve clean
