@@ -29,9 +29,12 @@ never relaxation-like X errors. Where the curves don't cross inside the scanned 
 towards the threshold, up to --retries times. Without --pg/--pt/--pr the axis thresholds that aim the grid come
 from a coarse scan first.
 
-Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.json with
-every simulated point and threshold, and <name>.png. Each direction is saved to <name>.partial.jsonl as it
-finishes, so rerunning the same command after a crash only runs the directions still missing.
+Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/:
+<name>.csv, every simulated point (direction, basis, distance, p and its LER), appended as each finishes;
+<name>_thresholds.csv, one row per direction with its threshold, which <name>.png (and the viewer) are drawn
+from. A rerun reuses every point already in <name>.csv, so it picks up where a crash stopped it, and a run with
+more bias points or a moved window only simulates the new ones. --sources warns if that code changed
+since.
 """
 # Parts of this file are adapted from IBM's QEC-with-spin-qubits, (C) Copyright IBM 2023, licensed under the
 # Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0): LogFail_of_d_p,
@@ -39,7 +42,7 @@ finishes, so rerunning the same command after a crash only runs the directions s
 # bias lists of generate_Gbias_plot.py / generate_Tbias_plot.py, and Arrow3D and the bias figure of
 # Threshold_surfaces_demo.ipynb. Modified: rewritten for this repo's circuits, noise and decoder.
 import argparse
-import json
+import csv
 import os
 from functools import lru_cache
 from multiprocessing import Pool
@@ -55,10 +58,24 @@ from tqdm import tqdm
 
 from decode import SCHEMES  # also puts src/shared on the path
 from floquet import CODES, memory_circuit
-from memory import logical_errors, uniform_matcher
+from memory import append_row, logical_errors, point_key, saved_rows, start_csv, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
 
 ROOT = Path(__file__).resolve().parents[2]
+# <name>.csv: one row per simulated point; POINT_KEY is what makes two points the same simulation
+POINT_FIELDS = ("scheme", "code", "decoder", "basis", "distance", "p", "theta", "phi", "eta_g", "eta_t", "shots_max",
+                "batch", "max_fail", "shots", "errors")
+POINT_KEY = tuple(f for f in POINT_FIELDS if f not in ("batch", "shots", "errors"))
+# <name>_thresholds.csv: one row per direction; group is axis (the three axis thresholds aiming the grid, in
+# the order G, T, R), surface, g_bias or t_bias
+SUMMARY_FIELDS = ("group", "theta", "phi", "eta_g", "eta_t", "p_th", "p_th_error", "p_th_Z", "p_th_X", "scheme",
+                  "code", "decoder", "distances")
+_CACHE, _POINTS = {}, None  # each worker's copy of <name>.csv (key -> LER) and its path
+
+
+def _init(cache: dict, points: Path) -> None:
+    global _CACHE, _POINTS
+    _CACHE, _POINTS = cache, points
 
 
 def noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
@@ -89,9 +106,14 @@ def log_fail(task: dict) -> list:
         for p in task["errors"]:
             if rows and rows[-1][1] >= task["max_fail_rate"]:
                 break
-            noisy = add_noise(circuit, noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
-            errors, ran = logical_errors(noisy, task["shots"], task["max_fail"], task["batch"], matcher)
-            rows.append([float(p), errors / ran])
+            pt = dict(task, code=task.get("code", "css"), shots_max=task["shots"], distance=d, p=float(p))
+            key = point_key(pt, POINT_KEY)
+            if key not in _CACHE:
+                noisy = add_noise(circuit, noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
+                errors, ran = logical_errors(noisy, task["shots"], task["max_fail"], task["batch"], matcher)
+                _CACHE[key] = errors / ran
+                append_row(_POINTS, POINT_FIELDS, dict(pt, shots=ran, errors=errors))
+            rows.append([float(p), _CACHE[key]])
         out.append([d, rows])
     return out
 
@@ -139,7 +161,7 @@ def combine(lf_z: list, lf_x: list) -> dict:
     """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's."""
     (z, z_err), (x, x_err) = threshold_from_log_fail(lf_z), threshold_from_log_fail(lf_x)
     p_th, err = min(((t, e) for t, e in ((z, z_err), (x, x_err)) if t > 0), default=(0.0, 0.0))
-    return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x, log_fail={"Z": lf_z, "X": lf_x})
+    return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x)
 
 
 def _indexed(item: tuple) -> tuple:
@@ -147,27 +169,16 @@ def _indexed(item: tuple) -> tuple:
     return i, scan(task)
 
 
-def run_tasks(pool: Pool, tasks: list[dict], partial: Path) -> list:
-    """`scan` of every task, in order. Each result is appended to `partial` as soon as it lands, and tasks
-    already in it (from a run cut short) are not run again, so a rerun with the same settings picks up where
-    the last one stopped."""
-    done = {}
-    if partial.exists():
-        for line in partial.read_text().splitlines():
-            row = json.loads(line)
-            done[row["key"]] = row["log_fail"]
-    keys = [json.dumps(task, sort_keys=True) for task in tasks]
-    todo = [(i, tasks[i]) for i, key in enumerate(keys) if key not in done]
-    with open(partial, "a") as f, tqdm(total=len(tasks), initial=len(tasks) - len(todo), unit="dir",
-                                        desc=tasks[0]["scheme"] if tasks else None) as bar:
-        for i, lf in pool.imap_unordered(_indexed, todo):
-            done[keys[i]] = lf
-            f.write(json.dumps({"key": keys[i], "log_fail": lf}) + "\n")
-            f.flush()
+def run_tasks(pool: Pool, tasks: list[dict]) -> list:
+    """`scan` of every task, in order. Points already in <name>.csv are not simulated again."""
+    out = [None] * len(tasks)
+    with tqdm(total=len(tasks), unit="dir", desc=tasks[0]["scheme"] if tasks else None) as bar:
+        for i, lf in pool.imap_unordered(_indexed, list(enumerate(tasks))):
+            out[i] = lf
             bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
                                 f"{100 * threshold_from_log_fail(lf)[0]:.3f}%")
             bar.update()
-    return [done[key] for key in keys]
+    return out
 
 
 def direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
@@ -175,25 +186,23 @@ def direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
     return np.arctan2(p_r, np.hypot(p_g, p_t)), np.arctan2(p_t, p_g), float(np.sqrt(p_g ** 2 + p_t ** 2 + p_r ** 2))
 
 
-def run_both(pool: Pool, tasks: list[dict], partial: Path) -> list[dict]:
+def run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
     """Each task in the Z and the X basis, `combine`d."""
-    lfs = run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"], partial)
+    lfs = run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"])
     return [combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
 
 
-def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
+def run(args, pool: Pool, bias_only: bool = False) -> dict:
     base = dict(scheme=args.scheme, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
-                retries=args.retries)
-    if args.code != "css":  # only then, so CSS tasks keep the keys their saved .partial.jsonl runs resume by
-        base["code"] = args.code
+                retries=args.retries, code=args.code)
     eta = dict(eta_g=args.eta_g, eta_t=args.eta_t)
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
         coarse = list(np.geomspace(1e-3, 0.3, 16))
         tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))]
         print("coarse scan along the three axes", flush=True)
-        found = [r["p_th"] for r in run_both(pool, tasks, partial)]
+        found = [r["p_th"] for r in run_both(pool, tasks)]
         axes = [a if a is not None else (f or 0.05) for a, f in zip(axes, found)]
         print("axis thresholds p_G, p_T, p_R:", ", ".join(f"{a:.4f}" for a in axes), flush=True)
     p_g_max, p_t_max, p_r_max = axes
@@ -215,7 +224,7 @@ def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
 
     groups = {"g_bias": g_bias, "t_bias": t_bias} if bias_only else {"surface": surface, "g_bias": g_bias, "t_bias": t_bias}
     print("bias directions" if bias_only else "surface and bias directions", flush=True)
-    results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks], partial))
+    results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks]))
     data = dict(settings=vars(args), axes=axes)
     for key, tasks in groups.items():
         data[key] = []
@@ -223,6 +232,36 @@ def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
             data[key].append(dict(theta=task["theta"], phi=task["phi"], eta_g=task["eta_g"], eta_t=task["eta_t"],
                                   **result))
     return data
+
+
+AXES = ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))  # (theta, phi) of pure gate, idling and readout noise
+
+
+def summary_rows(data: dict) -> list[dict]:
+    """`data` (run's) as the rows of <name>_thresholds.csv."""
+    s = data["settings"]
+    common = dict(scheme=s["scheme"], code=s["code"], decoder=s["decoder"], distances=" ".join(map(str, s["distances"])))
+    rows = [dict(common, group="axis", theta=t, phi=f, eta_g=s["eta_g"], eta_t=s["eta_t"], p_th=a)
+            for (t, f), a in zip(AXES, data["axes"])]
+    return rows + [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
+
+
+def data_from_summary(rows: list[dict]) -> dict:
+    """The rows of <name>_thresholds.csv back as `run`'s data."""
+    axis = [r for r in rows if r["group"] == "axis"]
+    first = axis[0]
+    settings = dict(scheme=first["scheme"], code=first["code"], decoder=first["decoder"],
+                    distances=[int(d) for d in str(first["distances"]).split()], eta_g=first["eta_g"],
+                    eta_t=first["eta_t"])
+    return dict(settings=settings, axes=[r["p_th"] for r in axis],
+                **{g: [r for r in rows if r["group"] == g] for g in ("surface", "g_bias", "t_bias")})
+
+
+def write_summary(rows: list[dict], path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 class Arrow3D(FancyArrowPatch):
@@ -333,10 +372,11 @@ def main() -> None:
     parser.add_argument("--max-fail-rate", type=float, default=0.45, help="stop raising p past this LER")
     parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--out", type=Path, help="writes <out>.json and <out>.png")
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.json")
+    parser.add_argument("--out", type=Path, help="writes <out>.csv, <out>_thresholds.csv and <out>.png")
+    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>_thresholds.csv")
     parser.add_argument("--bias-only", action="store_true",
-                        help="run only (c) and replace it in <out>.json, keeping its surface and axes")
+                        help="run only (c) and replace it in <out>_thresholds.csv, keeping its surface and axes")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
     if args.out is None:
@@ -344,30 +384,29 @@ def main() -> None:
                   else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
         args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
+    # not with_suffix: a name like ..._etaG0.5_... has a dot of its own
+    points, summary, png = (args.out.parent / (args.out.name + end) for end in (".csv", "_thresholds.csv", ".png"))
     if args.plot_only:
-        data = json.loads(args.out.with_suffix(".json").read_text())
+        data = data_from_summary(saved_rows(summary))
     else:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        saved = args.out.with_suffix(".json")
-        old = json.loads(saved.read_text()) if args.bias_only and saved.exists() else None
+        start_csv(points, POINT_FIELDS, args.sources)
+        old = saved_rows(summary) if args.bias_only else []
         if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
-            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
-                                                                                  old["axes"]))
-        # its own partial file, so a bias-only run never touches a full run's
-        partial = args.out.with_suffix(".bias.partial.jsonl" if args.bias_only else ".partial.jsonl")
-        with Pool(args.workers) as pool:
-            data = run(args, pool, partial, args.bias_only)
-        data["settings"] = {k: str(v) if isinstance(v, Path) else v for k, v in data["settings"].items()}
-        if args.bias_only:
-            new = data
-            data = old or dict(new, surface=[])
-            data.update(g_bias=new["g_bias"], t_bias=new["t_bias"], bias_settings=new["settings"])
-        saved.write_text(json.dumps(data))
-        partial.unlink()
+            axes = [r["p_th"] for r in old if r["group"] == "axis"]
+            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr), axes))
+        cache = {point_key(r, POINT_KEY): r["errors"] / r["shots"] for r in saved_rows(points)}
+        print(f"{len(cache)} points already in {points}", flush=True)
+        with Pool(args.workers, initializer=_init, initargs=(cache, points)) as pool:
+            data = run(args, pool, args.bias_only)
+        rows = summary_rows(data)
+        if args.bias_only:  # keep the saved surface
+            rows += [r for r in old if r["group"] == "surface"]
+        write_summary(rows, summary)
+        data = data_from_summary(saved_rows(summary))
     for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
         print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
-    plot(data, args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.json, {args.out}.png")
+    plot(data, png)
+    print(f"wrote {summary}, {png}")
 
 
 if __name__ == "__main__":

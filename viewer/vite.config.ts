@@ -14,7 +14,7 @@ function listResults(): string[] {
   if (!fs.existsSync(RESULTS)) return [];
   return (fs.readdirSync(RESULTS, { recursive: true }) as string[])
     .map(f => path.join(RESULTS, f))
-    .filter(f => f.endsWith(".csv") || (f.endsWith(".json") && path.basename(path.dirname(f)) === "thresholds"))
+    .filter(f => f.endsWith(".csv"))
     .map(f => ({ f, t: fs.statSync(f).mtimeMs }))
     .sort((a, b) => b.t - a.t)
     .map(({ f }) => path.relative(REPO, f).split(path.sep).join("/"));

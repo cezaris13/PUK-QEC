@@ -12,9 +12,11 @@ errors are left out: at low p the largest distances need a lot of shots to show 
 Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
 qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
 Lambda = LER(d) / LER(d + 2). --plot-only redraws the PNG from <out>.csv.
+
+Each (scheme, distance) is appended to <out>.csv as it finishes, and a rerun with the same settings skips the ones
+already there, so a cut-short run picks up where it stopped; --sources warns if that code changed since.
 """
 import argparse
-import csv
 import math
 from pathlib import Path
 
@@ -22,19 +24,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks, read_rows
+from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
 from floquet import memory_circuit
-from memory import sweep
+from memory import append_row, point_key, saved_rows, start_csv, sweep
 from noise import NOISE_MODELS
 
 
+FIELDS = ("scheme", "distance", "rounds", "noise", "eta", "p", "shots_max", "max_errors", "qubits", "shots", "errors",
+          "ler")
+KEY = ("scheme", "distance")
+
+
 def measure(schemes: list[str], distances: list[int], noise: str, eta: float, p: float, shots: int,
-            max_errors: int) -> list[dict]:
+            max_errors: int, csv_path: Path) -> list[dict]:
     """One row per (scheme, distance): its qubit count and the LER at p, from up to `shots` shots, stopping at
-    `max_errors` logical errors."""
-    return [dict(scheme=name, qubits=memory_circuit(d, 1, SCHEMES[name]).num_qubits, **row)
-            for name in schemes for d in distances
-            for row in sweep(d, d, noise, eta, [p], shots, SCHEMES[name], max_errors)]
+    `max_errors` logical errors. Rows not yet in `csv_path` are run and appended to it one by one."""
+    done = {point_key(r, KEY) for r in saved_rows(csv_path)}
+    for name in schemes:
+        for d in distances:
+            if point_key(dict(scheme=name, distance=d), KEY) in done:
+                continue
+            for row in sweep(d, d, noise, eta, [p], shots, SCHEMES[name], max_errors):
+                append_row(csv_path, FIELDS, dict(row, scheme=name, shots_max=shots, max_errors=max_errors,
+                                                   qubits=memory_circuit(d, 1, SCHEMES[name]).num_qubits))
+    wanted = {point_key(dict(scheme=n, distance=d), KEY) for n in schemes for d in distances}
+    return [r for r in saved_rows(csv_path) if point_key(r, KEY) in wanted]
 
 
 def qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
@@ -105,22 +119,22 @@ def main() -> None:
     parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
+    csv_path = args.out.with_suffix(".csv")
     if args.plot_only:
-        rows = read_rows(args.out.with_suffix(".csv"))
+        rows = saved_rows(csv_path)
         args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
     else:
-        rows = measure(args.schemes, args.distances, args.noise, args.eta, args.p, args.shots, args.max_errors)
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.out.with_suffix(".csv"), "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0])
-            writer.writeheader()
-            writer.writerows(rows)
+        start_csv(csv_path, FIELDS, args.sources)
+        rows = measure(args.schemes, args.distances, args.noise, args.eta, args.p, args.shots, args.max_errors,
+                       csv_path)
     for name in args.schemes:
         fit = qubits_needed([r for r in rows if r["scheme"] == name], args.target)
         print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
-                                "not enough distances with errors to fit (more shots or larger p)"))
+                                "no fit: under two distances with errors (more shots or larger p), or the LER "
+                                "rises with d (p above threshold: lower p)"))
     plot(rows, args.target, args.out.with_suffix(".png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
