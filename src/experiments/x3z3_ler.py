@@ -18,7 +18,6 @@ there, so a cut-short run picks up where it stopped. x3z3_bias.py with the same 
 each reuses the other's points. Points with no logical errors are left out of the plots.
 """
 import argparse
-import csv
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -28,9 +27,10 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 from floquet import CODES, memory_circuit
-from memory import logical_errors, run_points
+from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
 from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson
+from writing.results_csv import read_rows, run_points
 
 ROOT = Path(__file__).resolve().parents[2]
 # As physical_to_logical.py and footprint.py: colour = distance (DISTANCE_COLOUR), line style and marker = scheme
@@ -69,7 +69,7 @@ def sweep_parser(doc: str) -> argparse.ArgumentParser:
 
 def sweep(args, extra_ps: set[float] = frozenset()) -> list[dict]:
     """Every point of the grid `args` sets, plus `extra_ps`, in <args.out>.csv (args.out defaults from the
-    settings); simulates nothing with --plot-only. The CSV's rows, as text."""
+    settings); simulates nothing with --plot-only. The CSV's rows."""
     if args.out is None:
         args.out = ROOT / "results" / "single_ancilla" / "x3z3" / (
             f"{args.noise}_d{'-'.join(map(str, args.distances))}_p{args.p_min:g}-{args.p_max:g}x{args.num}"
@@ -83,7 +83,7 @@ def sweep(args, extra_ps: set[float] = frozenset()) -> list[dict]:
                  for p in ps for b in "ZX"]
         # slowest first (largest distance, then highest p), so the last workers aren't left with one big job
         run_points(csv_path, sorted(tasks, key=lambda t: (-t["distance"], -t["p"])), _point, args.workers)
-    return list(csv.DictReader(csv_path.open()))
+    return read_rows(csv_path)
 
 
 def combined(rows: list[dict]) -> dict:

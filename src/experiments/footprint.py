@@ -12,9 +12,10 @@ errors are left out: at low p the largest distances need a lot of shots to show 
 
 Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
 qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
-Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (memory.run_points), so a rerun
-picks up where a run stopped; --plot-only redraws the PNG from <out>.csv. With more than one of --codes, X3Z3
-markers are filled and CSS ones hollow, one fit per (code, scheme). --sources warns if that code changed since <out>.csv was written.
+Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (writing.results_csv.run_points),
+so a rerun picks up where a run stopped; --plot-only redraws the PNG from <out>.csv. With more than one of
+--codes, X3Z3 markers are filled and CSS ones hollow, one fit per (code, scheme). --sources warns if that code
+changed since <out>.csv was written.
 """
 import argparse
 import math
@@ -27,9 +28,10 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 from floquet import CODES, memory_circuit
-from memory import logical_errors, read_rows, run_points
+from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
 from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
+from writing.results_csv import read_rows, run_points
 
 
 def main() -> None:
