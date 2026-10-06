@@ -1,25 +1,11 @@
 """Two ancillas per edge: a syndrome and a reference spin ancilla between every pair of data qubits, read out
 together by spin blockade (as in SpinQEC). The step circuit for floquet.memory_circuit (src/shared/floquet.py).
 """
-import sys
-from pathlib import Path
 
 import stim
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
-from floquet import Edge, aligned, check_paulis, edge_list, hex_positions, qubits, step_colour, torus
-
-
-def thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
-    """The two points splitting a -> b into thirds: where an edge's ancillas sit."""
-    return torus(a + (b - a) / 3, distance), torus(a + (b - a) * 2 / 3, distance)
-
-
-def edge_ancillas(distance: int) -> list[tuple[Edge, complex, complex]]:
-    """(edge, main, reff) for every edge in `edge_list` order: the two spin ancillas between its data qubits,
-    read out together by spin blockade (as in SpinQEC). main does the calculation (holds the syndrome) and sits
-    next to data[0]; reff, its readout reference held in a known state, sits next to data[1]."""
-    return [(e, *thirds(*e.ends, distance)) for e in edge_list(distance)]
+from floquet import (Edge, check_paulis, check_scheme, collect, edge_list, hex_positions, qubits,
+                     step_circuit, step_colour, torus)
 
 
 def positions(distance: int) -> dict[complex, complex]:
@@ -27,7 +13,7 @@ def positions(distance: int) -> dict[complex, complex]:
     of the way along their edge."""
     pos = hex_positions(distance)
     for e in edge_list(distance):
-        pos.update(zip(thirds(*e.ends, distance), thirds(*e.hex_ends, distance)))
+        pos.update(zip(_thirds(*e.ends, distance), _thirds(*e.hex_ends, distance)))
     return pos
 
 
@@ -35,7 +21,7 @@ def qubit_kinds(distance: int) -> dict[complex, str]:
     """Every qubit -> "data", "main" or "reff", in index order: a qubit's index in every circuit is its
     position here. Data qubits first (as in `qubits`), then each edge's main and reff."""
     kinds = {q: "data" for q in qubits(distance)}
-    for _, main, reff in edge_ancillas(distance):
+    for _, main, reff in _edge_ancillas(distance):
         kinds[main] = "main"
         kinds[reff] = "reff"
     return kinds
@@ -49,36 +35,12 @@ def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "cs
     QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
     only move where timeslice diagrams draw each qubit.
     """
-    parity_meas = "XZ"  # even steps measure XX, odd steps ZZ
-
-
-    # Qubit coordinate -> its index in the circuit.
-    q2i = {}
-    for index, q in enumerate(qubit_kinds(distance)):
-        q2i[q] = index
-
-    # Qubit coordinate -> where diagrams draw it.
-    if hex_view:
-        q2pos = positions(distance)
-    else:
-        q2pos = {}
-        for q in q2i:
-            q2pos[q] = q
-
-    circuit = stim.Circuit()
-    for q, index in q2i.items():
-        circuit.append("QUBIT_COORDS", [index], [q2pos[q].real, q2pos[q].imag])
-
-
-
-    checks = [parity_check(check_paulis(parity_meas[r % 2], e.data, code), q2i[e.data[0]], q2i[e.data[1]], q2i[main], q2i[reff])
-              for e, main, reff in edge_ancillas(distance) if e.colour == step_colour(r)]
-    for layer in aligned(checks):  # layer k of every edge at once, one TICK each (same Pauli, same layer count)
-        for part in layer:
-            for name, targets in part:
-                circuit.append(name, targets)
-        circuit.append("TICK")
-    return circuit
+    q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
+    pos = positions(distance) if hex_view else {q: q for q in q2i}
+    checks = [parity_check(check_paulis("XZ"[r % 2], e.data, code), q2i[e.data[0]], q2i[e.data[1]], q2i[main],
+                           q2i[reff])
+              for e, main, reff in _edge_ancillas(distance) if e.colour == step_colour(r)]
+    return step_circuit({i: pos[q] for q, i in q2i.items()}, checks)
 
 
 def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[list[tuple[str, list[int]]]]:
@@ -97,10 +59,24 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[lis
     Returns its layers, each a list of (gate, targets), for the caller to TICK between: `round_circuit`
     runs layer k of every edge together. Leaves one measurement record.
     """
-    p0, p1 = pauli * 2 if len(pauli) == 1 else pauli
-    if p0 == p1 == "Z":
-        reset, first, second, turn = [("R", [main, reff])], ("CX", [d0, main]), ("CX", [d1, reff]), []
-    else:
-        reset, first, second, turn = ([("RX", [main]), ("R", [reff])], (f"C{p0}", [main, d0]),
-                                      (f"C{p1}", [reff, d1]), [[("H", [reff])]])
-    return [reset, [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
+    reset, first, second, turn = collect(pauli, d0, d1, main, reff)
+    return [[reset, ("R", [reff])], [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
+
+
+def _thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
+    """The two points splitting a -> b into thirds: where an edge's ancillas sit."""
+    return torus(a + (b - a) / 3, distance), torus(a + (b - a) * 2 / 3, distance)
+
+
+def _edge_ancillas(distance: int) -> list[tuple[Edge, complex, complex]]:
+    """(edge, main, reff) for every edge in `edge_list` order: the two spin ancillas between its data qubits,
+    read out together by spin blockade (as in SpinQEC). main does the calculation (holds the syndrome) and sits
+    next to data[0]; reff, its readout reference held in a known state, sits next to data[1]."""
+    return [(e, *_thirds(*e.ends, distance)) for e in edge_list(distance)]
+
+
+def _check(distance: int) -> None:
+    """floquet.check_scheme for the pairs: record j of step r is the parity of the j-th edge of its colour."""
+    q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
+    check_scheme(distance, round_circuit, lambda r: [e.data for e in edge_list(distance) if e.colour == step_colour(r)],
+                 q2i)

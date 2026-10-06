@@ -14,23 +14,16 @@ layout (slides: D1 ... D6 clockwise from the top left),
 
     .venv/bin/python src/single_ancilla/method_c/method_c.py --distance 2
 """
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 import corner_readout
+from floquet import collect
 
 
 def layers(pauli: str, u: int, v: int, a: int, s: int, *_) -> tuple[corner_readout.Layers, int, int]:
     """Method C's gates for one check, then (syndrome, reference) as they start; `pauli` is two letters, P_u then
     P_v ("XX", "ZZ", or the X3Z3 code's "XZ" / "ZX"); the syndrome's reset, CPs and H as in method_a."""
-    pu, pv = pauli
-    if pu == pv == "Z":
-        reset, first, second, turn = [("R", [a, s])], ("CX", [u, a]), ("CX", [v, a]), []
-    else:
-        reset, first, second, turn = ([("RX", [a]), ("R", [s])], (f"C{pu}", [a, u]), (f"C{pv}", [a, v]),
-                                      [[("H", [a])]])
-    return [reset, [first], [second], *turn, [("SWAP", [s, u])], [("MZZ", [a, u])], [("SWAP", [s, u])]], a, s
+    reset, first, second, turn = collect(pauli, u, v, a)
+    return [[reset, ("R", [s])], [first], [second], *turn, [("SWAP", [s, u])], [("MZZ", [a, u])], [("SWAP", [s, u])]], a, s
 
 
 def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css"):

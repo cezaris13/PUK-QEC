@@ -50,7 +50,107 @@ def biased_single_qubit_probabilities(p: float, eta: float) -> list[float]:
     return [other, other, dephasing]
 
 
-def biased_two_qubit_probabilities(p: float, eta: float) -> list[float]:
+def spin_qubit_noise_model(p_g1: float, p_g2: float, p_t1: float, p_t2: float, p_r: float) -> NoiseModel:
+    """Hetenyi & Wootton's independent error sources ("Tailoring quantum error correction to spin qubits",
+    arXiv:2306.17786), as IBM's QEC-with-spin-qubits applies them:
+
+        1-qubit gates              DEPOLARIZE1  p_g1
+        2-qubit gates (CX, SWAP)   DEPOLARIZE2  p_g2
+        readout, reset             flip         p_r
+        idling, once per step      relaxation p_t1 (split over X and Y), dephasing p_t2 (Z)
+
+    The idling hits every qubit left idle while a step's ancillas are read out, as IBM's idles every data
+    qubit after each edge measurement. src/experiments/thresholds.py sets these from (p, theta, phi,
+    eta_G, eta_T)."""
+    two_qubit = NoiseTerm(gate_noise_name="DEPOLARIZE2", gate_noise_probs=[p_g2])
+    return NoiseModel(
+        R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
+        M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
+        H_gate=NoiseTerm(gate_noise_name="DEPOLARIZE1", gate_noise_probs=[p_g1]),
+        CX_gate=two_qubit,
+        CZ_gate=two_qubit,
+        SWAP_gate=two_qubit,
+        round_noise_name="PAULI_CHANNEL_1",
+        round_noise_probs=[p_t1 / 2, p_t1 / 2, p_t2],
+    )
+
+
+def uniform_noise_model(p: float) -> NoiseModel:
+    """Every channel `spin_qubit_noise_model` uses, all at `p` and depolarizing: the reference
+    memory.uniform_matcher builds its fixed decoder weights from."""
+    return spin_qubit_noise_model(p, p, 2 * p / 3, p / 3, p)
+
+
+def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None = None) -> stim.Circuit:
+    """A copy of the noiseless `circuit` with `model` applied one layer (TICK to TICK) at a time.
+
+    Two-qubit gates get CZ_gate, SWAP_gate or (any other) CX_gate noise; single-qubit unitaries get
+    H_gate. Resets get R_gate right after. Measurements, MPP included, get M_gate as a flipped
+    result -- readout misassignment, which leaves the qubit alone. Qubits no gate touches in a layer
+    get that layer's idle noise, and in a layer that measures they also get `round_noise`: the wait
+    while the ancillas are read out.
+
+    Built as text and parsed once: stim.Circuit.append costs ~20 us a call, which on a d = 7 memory circuit
+    was most of the run time.
+    """
+    if qubits is None:
+        qubits = sorted({t.qubit_value for inst in circuit.flattened() for t in inst.targets_copy()
+                         if t.qubit_value is not None})
+    out: list[str] = []
+    touched: set[int] = set()
+    terms: list[NoiseTerm] = []
+    measured = False
+
+    def end_layer() -> None:
+        nonlocal measured
+        idle = [q for q in qubits if q not in touched]
+        term = next((t for t in terms if t.idle_noise_name), None)
+        if idle and term:
+            out.append(_line(term.idle_noise_name, idle, term.idle_noise_probs))
+        if idle and measured and model.round_noise_name:
+            out.append(_line(model.round_noise_name, idle, model.round_noise_probs))
+        touched.clear()
+        terms.clear()
+        measured = False
+
+    for inst in circuit:
+        if isinstance(inst, stim.CircuitRepeatBlock):
+            end_layer()
+            out.append(f"REPEAT {inst.repeat_count} {{\n{add_noise(inst.body_copy(), model, qubits)}\n}}")
+            continue
+        if inst.name == "TICK":
+            end_layer()
+            out.append("TICK")
+            continue
+        gate = stim.gate_data(inst.name)
+        gate_qubits = [t.qubit_value for t in inst.targets_copy() if t.qubit_value is not None]
+        if gate.produces_measurements:
+            m = model.M_gate
+            out.append(_line(inst.name, _targets(inst), m.gate_noise_probs[:1]) if m.gate_noise_name else str(inst))
+            if gate.is_reset:
+                _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
+            terms.append(m)
+            measured = True
+        elif gate.is_reset:
+            out.append(str(inst))
+            _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
+            terms.append(model.R_gate)
+        elif gate.is_unitary:
+            term = ({"CZ": model.CZ_gate, "SWAP": model.SWAP_gate}.get(gate.name, model.CX_gate)
+                    if gate.is_two_qubit_gate else model.H_gate)
+            out.append(str(inst))
+            if term.gate_noise_name:
+                out.append(_line(term.gate_noise_name, _targets(inst), term.gate_noise_probs))
+            terms.append(term)
+        else:  # annotations (DETECTOR, QUBIT_COORDS, ...) pass straight through
+            out.append(str(inst))
+            continue
+        touched.update(gate_qubits)
+    end_layer()
+    return stim.Circuit("\n".join(out))
+
+
+def _biased_two_qubit_probabilities(p: float, eta: float) -> list[float]:
     """Split a total two-qubit error rate `p` into the 15 PAULI_CHANNEL_2 probabilities.
 
     Order is stim's: IX IY IZ XI XX XY XZ YI YX YY YZ ZI ZX ZY ZZ. The weight
@@ -72,7 +172,7 @@ def biased_two_qubit_probabilities(p: float, eta: float) -> list[float]:
     return probs
 
 
-def spin_noise_model(p: float, eta: float = 10.0) -> NoiseModel:
+def _spin_noise_model(p: float, eta: float = 10.0) -> NoiseModel:
     """The one-parameter circuit-level model used for this repo's threshold sweeps.
 
     Everything scales off `p`, the two-qubit gate error rate, so a threshold is a
@@ -99,12 +199,12 @@ def spin_noise_model(p: float, eta: float = 10.0) -> NoiseModel:
 
     So numbers from this model are internally consistent but not directly
     comparable to the paper's tables. `eta` biases every channel towards
-    dephasing; see the module docstring and `biased_two_qubit_probabilities`.
+    dephasing; see the module docstring and `_biased_two_qubit_probabilities`.
     """
     idle = dict(idle_noise_name="PAULI_CHANNEL_1",
                 idle_noise_probs=biased_single_qubit_probabilities(p / 10, eta))
     two_qubit = NoiseTerm(gate_noise_name="PAULI_CHANNEL_2",
-                          gate_noise_probs=biased_two_qubit_probabilities(p, eta), **idle)
+                          gate_noise_probs=_biased_two_qubit_probabilities(p, eta), **idle)
     return NoiseModel(
         R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[2 * p]),
         M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[5 * p]),
@@ -114,23 +214,23 @@ def spin_noise_model(p: float, eta: float = 10.0) -> NoiseModel:
         CX_gate=two_qubit,
         CZ_gate=two_qubit,
         SWAP_gate=NoiseTerm(gate_noise_name="PAULI_CHANNEL_2",
-                            gate_noise_probs=biased_two_qubit_probabilities(1.5 * p, eta),
+                            gate_noise_probs=_biased_two_qubit_probabilities(1.5 * p, eta),
                             **idle),
         round_noise_name="PAULI_CHANNEL_1",
         round_noise_probs=biased_single_qubit_probabilities(2 * p, eta),
     )
 
 
-def hbd_two_qubit_probabilities(p: float, eta: float) -> list[float]:
+def _hbd_two_qubit_probabilities(p: float, eta: float) -> list[float]:
     """The HBD paper's split of a two-qubit error rate `p` into 15 PAULI_CHANNEL_2 probs.
 
-    Same shape as `biased_two_qubit_probabilities` -- weight concentrated on IZ, ZI,
+    Same shape as `_biased_two_qubit_probabilities` -- weight concentrated on IZ, ZI,
     ZZ -- but a different amount of it. HBD puts
 
         zeta = eta / (eta + 1)
 
     on the three Z-flavoured terms, i.e. the single-qubit bias applied directly to
-    the pair, where `biased_two_qubit_probabilities` applies it independently to
+    the pair, where `_biased_two_qubit_probabilities` applies it independently to
     each half and gets 3/5*x^2 + 2/5*x. HBD is the more biased of the two at every
     finite eta (at eta = 10: 0.909 vs 0.859). Returns probabilities summing to `p`.
 
@@ -144,7 +244,7 @@ def hbd_two_qubit_probabilities(p: float, eta: float) -> list[float]:
     return probs
 
 
-def hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseModel:
+def _hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseModel:
     """The HBD circuit-level model, as published (`si1000=False`) or SI1000-scaled.
 
     Everything scales off `p`, the two-qubit gate error rate:
@@ -159,10 +259,10 @@ def hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseM
     HBD is flat -- every operation costs `p`. MHBD re-weights it the way SI1000
     (https://quantum-journal.org/papers/q-2021-12-20-605/) re-weights its own
     model: cheap single-qubit gates, expensive readout, idling between the two.
-    That makes MHBD, not HBD, the one to compare against `spin_noise_model`, whose
+    That makes MHBD, not HBD, the one to compare against `_spin_noise_model`, whose
     ratios are the same except for reset (2p in both) and how the gates are biased.
 
-    Two differences from `spin_noise_model` survive in both variants:
+    Two differences from `_spin_noise_model` survive in both variants:
 
     * single-qubit gates are *depolarizing*, not biased -- straight from the paper;
     * there is no per-layer idle noise, only the per-round term. Idle qubits pay
@@ -172,7 +272,7 @@ def hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseM
     """
     one_q, reset, readout, rounds = (0.1, 2, 5, 2) if si1000 else (1, 1, 1, 1)
     two_qubit = NoiseTerm(gate_noise_name="PAULI_CHANNEL_2",
-                          gate_noise_probs=hbd_two_qubit_probabilities(p, eta))
+                          gate_noise_probs=_hbd_two_qubit_probabilities(p, eta))
     return NoiseModel(
         R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[reset * p]),
         M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[readout * p]),
@@ -185,113 +285,27 @@ def hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseM
     )
 
 
-def spin_qubit_noise_model(p_g1: float, p_g2: float, p_t1: float, p_t2: float, p_r: float) -> NoiseModel:
-    """Hetenyi & Wootton's independent error sources ("Tailoring quantum error correction to spin qubits",
-    arXiv:2306.17786), as IBM's QEC-with-spin-qubits applies them:
-
-        1-qubit gates              DEPOLARIZE1  p_g1
-        2-qubit gates (CX, SWAP)   DEPOLARIZE2  p_g2
-        readout, reset             flip         p_r
-        idling, once per step      relaxation p_t1 (split over X and Y), dephasing p_t2 (Z)
-
-    The idling hits every qubit left idle while a step's ancillas are read out, as IBM's idles every data
-    qubit after each edge measurement. src/single_ancilla/thresholds.py sets these from (p, theta, phi,
-    eta_G, eta_T)."""
-    two_qubit = NoiseTerm(gate_noise_name="DEPOLARIZE2", gate_noise_probs=[p_g2])
-    return NoiseModel(
-        R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
-        M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p_r]),
-        H_gate=NoiseTerm(gate_noise_name="DEPOLARIZE1", gate_noise_probs=[p_g1]),
-        CX_gate=two_qubit,
-        CZ_gate=two_qubit,
-        SWAP_gate=two_qubit,
-        round_noise_name="PAULI_CHANNEL_1",
-        round_noise_probs=[p_t1 / 2, p_t1 / 2, p_t2],
-    )
+def _line(name: str, targets: str | list[int], args=()) -> str:
+    """One instruction as stim text: name(args) targets, `targets` as text or qubit indices."""
+    targets = targets if isinstance(targets, str) else " ".join(map(str, targets))
+    return f"{name}({','.join(repr(float(a)) for a in args)}) {targets}" if args else f"{name} {targets}"
 
 
-def uniform_noise_model(p: float) -> NoiseModel:
-    """Every channel `spin_qubit_noise_model` uses, all at `p` and depolarizing: the reference
-    memory.uniform_matcher builds its fixed decoder weights from."""
-    return spin_qubit_noise_model(p, p, 2 * p / 3, p / 3, p)
+def _targets(inst: stim.CircuitInstruction) -> str:
+    """`inst`'s targets as stim text (rec[-1], !3, X5, ... kept as written)."""
+    text = str(inst)
+    return text[text.index(") ") + 2:] if text.startswith(inst.name + "(") else text[len(inst.name) + 1:]
+
+
+def _flip_after_reset(out: list[str], gate_name: str, qubits: list[int], term: NoiseTerm) -> None:
+    """Add `term`'s reset error: a flip that actually flips the state `gate_name` prepared."""
+    if term.gate_noise_name:
+        out.append(_line("Z_ERROR" if gate_name.endswith("X") else "X_ERROR", qubits, term.gate_noise_probs[:1]))
 
 
 #: name -> f(p, eta) -> NoiseModel. `--noise` on the sweep picks from these.
 NOISE_MODELS = {
-    "spin": spin_noise_model,
-    "HBD": hbd_noise_model,
-    "MHBD": partial(hbd_noise_model, si1000=True),
+    "spin": _spin_noise_model,
+    "HBD": _hbd_noise_model,
+    "MHBD": partial(_hbd_noise_model, si1000=True),
 }
-
-
-def _flip_after_reset(circuit: stim.Circuit, gate_name: str, qubits: list[int], term: NoiseTerm) -> None:
-    """Append `term`'s reset error: a flip that actually flips the state `gate_name` prepared."""
-    if term.gate_noise_name:
-        circuit.append("Z_ERROR" if gate_name.endswith("X") else "X_ERROR", qubits, term.gate_noise_probs[0])
-
-
-def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None = None) -> stim.Circuit:
-    """A copy of the noiseless `circuit` with `model` applied one layer (TICK to TICK) at a time.
-
-    Two-qubit gates get CZ_gate, SWAP_gate or (any other) CX_gate noise; single-qubit unitaries get
-    H_gate. Resets get R_gate right after. Measurements, MPP included, get M_gate as a flipped
-    result -- readout misassignment, which leaves the qubit alone. Qubits no gate touches in a layer
-    get that layer's idle noise, and in a layer that measures they also get `round_noise`: the wait
-    while the ancillas are read out.
-    """
-    if qubits is None:
-        qubits = sorted({t.qubit_value for inst in circuit.flattened() for t in inst.targets_copy()
-                         if t.qubit_value is not None})
-    out = stim.Circuit()
-    touched: set[int] = set()
-    terms: list[NoiseTerm] = []
-    measured = False
-
-    def end_layer() -> None:
-        nonlocal measured
-        idle = [q for q in qubits if q not in touched]
-        term = next((t for t in terms if t.idle_noise_name), None)
-        if idle and term:
-            out.append(term.idle_noise_name, idle, term.idle_noise_probs)
-        if idle and measured and model.round_noise_name:
-            out.append(model.round_noise_name, idle, model.round_noise_probs)
-        touched.clear()
-        terms.clear()
-        measured = False
-
-    for inst in circuit:
-        if isinstance(inst, stim.CircuitRepeatBlock):
-            end_layer()
-            out.append(stim.CircuitRepeatBlock(inst.repeat_count, add_noise(inst.body_copy(), model, qubits)))
-            continue
-        if inst.name == "TICK":
-            end_layer()
-            out.append(inst)
-            continue
-        gate = stim.gate_data(inst.name)
-        targets = inst.targets_copy()
-        gate_qubits = [t.qubit_value for t in targets if t.qubit_value is not None]
-        if gate.produces_measurements:
-            m = model.M_gate
-            out.append(inst.name, targets, m.gate_noise_probs[0]) if m.gate_noise_name else out.append(inst)
-            if gate.is_reset:
-                _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
-            terms.append(m)
-            measured = True
-        elif gate.is_reset:
-            out.append(inst)
-            _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
-            terms.append(model.R_gate)
-        elif gate.is_unitary:
-            term = ({"CZ": model.CZ_gate, "SWAP": model.SWAP_gate}.get(gate.name, model.CX_gate)
-                    if gate.is_two_qubit_gate else model.H_gate)
-            out.append(inst)
-            if term.gate_noise_name:
-                out.append(term.gate_noise_name, targets, term.gate_noise_probs)
-            terms.append(term)
-        else:  # annotations (DETECTOR, QUBIT_COORDS, ...) pass straight through
-            out.append(inst)
-            continue
-        touched.update(gate_qubits)
-    end_layer()
-    return out

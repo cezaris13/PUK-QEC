@@ -2,9 +2,9 @@
 QEC-with-spin-qubits (https://github.com/IBM/QEC-with-spin-qubits, Hetenyi & Wootton, "Tailoring quantum error
 correction to spin qubits", arXiv:2306.17786): their figures (b) and (c), for these circuits.
 
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --distances 3 5 --nphi 6
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --plot-only   # redraw from the JSON
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --code x3z3   # the X3Z3 Floquet code
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --distances 3 5 --nphi 6
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --plot-only   # redraw from the JSON
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --code x3z3   # the X3Z3 Floquet code
 
 Noise (noise.spin_qubit_noise_model) has three independent sources, gates p_G, idling p_T and readout p_R. A
 direction (theta, phi) and a size p set them, as in IBM's plot_utils.LogFail_of_d_p:
@@ -15,7 +15,7 @@ direction (theta, phi) and a size p set them, as in IBM's plot_utils.LogFail_of_
 
 so eta_G is the 2-qubit to 1-qubit gate error ratio and eta_T the dephasing to relaxation idle ratio. Along
 each direction the threshold p_th is where the logical error rates of the distances cross
-(`threshold_from_log_fail`, IBM's Threshold_from_LogFail).
+(`_threshold_from_log_fail`, IBM's Threshold_from_LogFail).
 
 (b) Over a grid of directions spanning the octant, the threshold points (p_G, p_T, p_R) * p_th / p form a
 surface, coloured by its length p_th. (c) Along pure gate noise the threshold vs eta_G, along pure idling vs
@@ -29,12 +29,13 @@ never relaxation-like X errors. Where the curves don't cross inside the scanned 
 towards the threshold, up to --retries times. Without --pg/--pt/--pr the axis thresholds that aim the grid come
 from a coarse scan first.
 
-Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/:
-<name>.csv, every simulated point (direction, basis, distance, p and its LER), appended as each finishes;
-<name>_thresholds.csv, one row per direction with its threshold, which <name>.png (and the viewer) are drawn
-from. A rerun reuses every point already in <name>.csv, so it picks up where a crash stopped it, and a run with
-more bias points or a moved window only simulates the new ones. --sources warns if that code changed
-since.
+Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.csv with
+every simulated point, one row per (direction, basis, distance, p) appended as soon as it is done, and
+<name>.png, and <name>_thresholds.csv, one row per direction with its threshold (what the viewer behind
+`make serve` reads; derived, like the PNG). Each scan reads its points from the CSV before simulating any, so rerunning the same command after a crash
+only runs the points still missing, and a rerun with other settings (more NBIAS, say) reuses every point they
+share; --plot-only replays the scans from the CSV alone, or draws <name>_thresholds.csv if it has no CSV.
+--sources warns if that code changed since <name>.csv was written.
 """
 # Parts of this file are adapted from IBM's QEC-with-spin-qubits, (C) Copyright IBM 2023, licensed under the
 # Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0): LogFail_of_d_p,
@@ -44,6 +45,7 @@ since.
 import argparse
 import csv
 import os
+from multiprocessing import Lock
 from functools import lru_cache
 from multiprocessing import Pool
 from pathlib import Path
@@ -56,29 +58,113 @@ from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
 from tqdm import tqdm
 
-from decode import SCHEMES  # also puts src/shared on the path
+from physical_to_logical import SCHEMES
 from floquet import CODES, memory_circuit
-from memory import append_row, logical_errors, point_key, saved_rows, start_csv, uniform_matcher
+from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher, warn_stale
 from noise import add_noise, spin_qubit_noise_model
 
 ROOT = Path(__file__).resolve().parents[2]
-# <name>.csv: one row per simulated point; POINT_KEY is what makes two points the same simulation
-POINT_FIELDS = ("scheme", "code", "decoder", "basis", "distance", "p", "theta", "phi", "eta_g", "eta_t", "shots_max",
-                "batch", "max_fail", "shots", "errors")
-POINT_KEY = tuple(f for f in POINT_FIELDS if f not in ("batch", "shots", "errors"))
 # <name>_thresholds.csv: one row per direction; group is axis (the three axis thresholds aiming the grid, in
 # the order G, T, R), surface, g_bias or t_bias
 SUMMARY_FIELDS = ("group", "theta", "phi", "eta_g", "eta_t", "p_th", "p_th_error", "p_th_Z", "p_th_X", "scheme",
                   "code", "decoder", "distances")
-_CACHE, _POINTS = {}, None  # each worker's copy of <name>.csv (key -> LER) and its path
+AXES = ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))  # (theta, phi) of pure gate, idling and readout noise
+# One simulated point: what it is (POINT) and its result (shots, errors). A worker's view of <out>.csv, set by `_init`.
+POINT = ("scheme", "code", "decoder", "basis", "distance", "p", "theta", "phi", "eta_g", "eta_t", "shots_max", "batch",
+         "max_fail")
+_csv: Path | None = None
+_lock = None
+_done: dict = {}
 
 
-def _init(cache: dict, points: Path) -> None:
-    global _CACHE, _POINTS
-    _CACHE, _POINTS = cache, points
+class Arrow3D(FancyArrowPatch):
+    """An arrow between two 3D points (Threshold_surfaces_demo.ipynb)."""
+
+    def __init__(self, xs, ys, zs, *args, **kwargs):
+        super().__init__((0, 0), (0, 0), *args, **kwargs)
+        self._verts3d = xs, ys, zs
+
+    def do_3d_projection(self, renderer=None):
+        xs, ys, zs = proj3d.proj_transform(*self._verts3d, self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+        return np.min(zs)
 
 
-def noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--scheme", choices=SCHEMES, default="pairs")
+    parser.add_argument("--code", choices=CODES, default="css", help="css, or x3z3: the X3Z3 Floquet code")
+    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--decoder", choices=["uniform", "dem"], default="uniform",
+                        help="uniform: IBM's bias-blind weights (default); dem: weights from the exact noise")
+    parser.add_argument("--eta-g", type=float, default=1.0, help="2-qubit / 1-qubit gate error, for (b)")
+    parser.add_argument("--eta-t", type=float, default=20.0, help="dephasing / relaxation idling, for (b)")
+    parser.add_argument("--pg", type=float, help="threshold along pure gate noise, to aim the grid")
+    parser.add_argument("--pt", type=float, help="threshold along pure idling")
+    parser.add_argument("--pr", type=float, help="threshold along pure readout")
+    parser.add_argument("--nphi", type=int, default=6, help="grid of (b): nphi (nphi + 1) / 2 directions")
+    parser.add_argument("--nbias", type=int, default=9, help="eta values from 0.01 to 100 for (c)")
+    parser.add_argument("--num-p", type=int, default=10, help="error rates per direction")
+    parser.add_argument("--bias-num-p", type=int, help="error rates per direction of (c), default --num-p")
+    parser.add_argument("--delpth", type=float, default=0.5, help="(b) scans p_guess * (1 +- delpth)")
+    parser.add_argument("--bias-delpth", type=float, default=1.0, help="(c) scans p_axis * (1 +- this)")
+    parser.add_argument("--shots", type=int, default=20_000, help="most shots per point")
+    parser.add_argument("--batch", type=int, default=2_000)
+    parser.add_argument("--max-fail", type=int, default=2_000, help="stop a point at this many logical errors")
+    parser.add_argument("--max-fail-rate", type=float, default=0.45, help="stop raising p past this LER")
+    parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
+    parser.add_argument("--out", type=Path, help="writes <out>.csv (every point), <out>_thresholds.csv and <out>.png")
+    parser.add_argument("--plot-only", action="store_true",
+                        help="redraw <out>.png from <out>.csv, simulating nothing (or from <out>_thresholds.csv)")
+    parser.add_argument("--bias-only", action="store_true",
+                        help="run only (c) and replace it in <out>_thresholds.csv, keeping its surface and axes")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
+    args = parser.parse_args()
+
+    if args.out is None:
+        folder = (ROOT / "results" / "two_ancillas" if args.scheme == "pairs"
+                  else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
+        args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
+                             f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
+    # not with_suffix: a name like ..._etaG0.5_... has a dot of its own
+    csv_path, summary, png = (args.out.parent / (args.out.name + end) for end in (".csv", "_thresholds.csv", ".png"))
+    saved = _data_from_summary(read_rows(summary)) if summary.exists() else None
+    if args.plot_only and saved and not csv_path.exists():
+        data = saved  # a run from before the CSV: nothing to replay
+    elif args.plot_only:
+        if saved:  # aim at the saved axes: a run converted from before the CSV never kept its coarse scan
+            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
+                                                                                  saved["axes"]))
+        try:
+            with Pool(args.workers, initializer=_init, initargs=(csv_path, Lock())) as pool:
+                data = _run(args, pool)
+        except KeyError as missing:  # a point the replay needs isn't in the CSV
+            if not saved:
+                raise
+            print(f"replay incomplete ({missing}); drawing {summary.name} as saved")
+            data = saved
+    else:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        warn_stale(csv_path, args.sources)
+        old = saved if args.bias_only else None
+        if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
+            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
+                                                                                  old["axes"]))
+        with Pool(args.workers, initializer=_init, initargs=(csv_path, Lock())) as pool:
+            data = _run(args, pool, args.bias_only)
+        if args.bias_only:  # keep the saved surface, replace (c)
+            new = data
+            data = old or dict(new, surface=[])
+            data.update(g_bias=new["g_bias"], t_bias=new["t_bias"])
+        _write_summary(data, summary)
+    for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
+        print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
+    _plot(data, png)
+    print(f"wrote {csv_path}, {summary}, {png}")
+
+
+def _noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
     """The noise model at size p in direction (theta, phi), as IBM's LogFail_of_d_p sets its error rates."""
     # max(0, .): on the octant's walls cos/sin of pi/2 can round to -1e-17, which Stim refuses as a probability
     p_g, p_t, p_r = (max(0.0, x) for x in (p * np.cos(theta) * np.cos(phi), p * np.cos(theta) * np.sin(phi),
@@ -88,37 +174,50 @@ def noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
 
 
 @lru_cache(maxsize=None)
-def circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str, code: str = "css"):
+def _circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str, code: str = "css"):
     """The noiseless memory circuit (d rounds) and, for the uniform decoder, its fixed matcher: once per worker."""
     circuit = memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
     return circuit, uniform_matcher(circuit) if decoder == "uniform" else None
 
 
-def log_fail(task: dict) -> list:
+def _init(csv_path: Path, lock) -> None:
+    """Pool initializer: every worker reads the points already in `csv_path`, and appends new ones under `lock`."""
+    global _csv, _lock, _done
+    _csv, _lock = csv_path, lock
+    _done = {point_key(r, POINT): r for r in read_rows(csv_path)}
+
+
+def _log_fail(task: dict) -> list:
     """[[d, [[p, LER], ...]], ...] for one direction: IBM's LogFail_of_d_p. Each distance runs its error rates
     in order and stops once the LER passes max_fail_rate; each point runs batches of `batch` shots until
-    `shots` or `max_fail` logical errors."""
+    `shots` or `max_fail` logical errors, or is read back from the CSV if it is there already (with
+    task["cache_only"], it has to be)."""
     out = []
     for d in task["distances"]:
-        circuit, matcher = circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"],
-                                               task.get("code", "css"))
         rows = []
         for p in task["errors"]:
             if rows and rows[-1][1] >= task["max_fail_rate"]:
                 break
-            pt = dict(task, code=task.get("code", "css"), shots_max=task["shots"], distance=d, p=float(p))
-            key = point_key(pt, POINT_KEY)
-            if key not in _CACHE:
-                noisy = add_noise(circuit, noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
+            point = dict(scheme=task["scheme"], code=task["code"], decoder=task["decoder"], basis=task["basis"],
+                         distance=d, p=float(p), theta=float(task["theta"]), phi=float(task["phi"]),
+                         eta_g=float(task["eta_g"]), eta_t=float(task["eta_t"]), shots_max=task["shots"],
+                         batch=task["batch"], max_fail=task["max_fail"])
+            row = _done.get(point_key(point, POINT))
+            if row is None:
+                if task.get("cache_only"):
+                    raise KeyError(f"{point} is not in {_csv}: run without --plot-only")
+                circuit, matcher = _circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"], task["code"])
+                noisy = add_noise(circuit, _noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
                 errors, ran = logical_errors(noisy, task["shots"], task["max_fail"], task["batch"], matcher)
-                _CACHE[key] = errors / ran
-                append_row(_POINTS, POINT_FIELDS, dict(pt, shots=ran, errors=errors))
-            rows.append([float(p), _CACHE[key]])
+                row = dict(point, shots=ran, errors=errors)
+                with _lock:
+                    append_row(_csv, row)
+            rows.append([float(p), row["errors"] / row["shots"]])
         out.append([d, rows])
     return out
 
 
-def threshold_from_log_fail(log_fail_d_p: list, cutoff: float = 0.495) -> tuple[float, float]:
+def _threshold_from_log_fail(log_fail_d_p: list, cutoff: float = 0.495) -> tuple[float, float]:
     """(p_th, error), (0, 0) if the curves never cross: IBM's Threshold_from_LogFail. Below threshold the
     LER falls with d at every p, above it rises; p_th sits between the highest p of the first kind and the
     lowest of the second, nearer the one whose curves are closer together."""
@@ -142,67 +241,67 @@ def threshold_from_log_fail(log_fail_d_p: list, cutoff: float = 0.495) -> tuple[
     return p_th, max(p_th - lo, hi - p_th)
 
 
-def scan(task: dict) -> list:
-    """`log_fail`, and if the distances don't cross, again with the window moved 2.5x towards the threshold:
+def _scan(task: dict) -> list:
+    """`_log_fail`, and if the distances don't cross, again with the window moved 2.5x towards the threshold:
     down if the smallest distance already fails often at the lowest p, up otherwise; up to task["retries"]
     times. Error rates above 0.3 are dropped (some channels would go past probability 1)."""
     errors = task["errors"]
     for _ in range(task["retries"] + 1):
         errors = [p for p in errors if p <= 0.3]
-        lf = log_fail(dict(task, errors=errors))
-        if not errors or threshold_from_log_fail(lf)[0] > 0:
+        lf = _log_fail(dict(task, errors=errors))
+        if not errors or _threshold_from_log_fail(lf)[0] > 0:
             break
         factor = 1 / 2.5 if lf[0][1][0][1] >= 0.1 else 2.5
         errors = [p * factor for p in errors]
     return lf
 
 
-def combine(lf_z: list, lf_x: list) -> dict:
+def _combine(lf_z: list, lf_x: list) -> dict:
     """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's."""
-    (z, z_err), (x, x_err) = threshold_from_log_fail(lf_z), threshold_from_log_fail(lf_x)
+    (z, z_err), (x, x_err) = _threshold_from_log_fail(lf_z), _threshold_from_log_fail(lf_x)
     p_th, err = min(((t, e) for t, e in ((z, z_err), (x, x_err)) if t > 0), default=(0.0, 0.0))
     return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x)
 
 
 def _indexed(item: tuple) -> tuple:
     i, task = item
-    return i, scan(task)
+    return i, _scan(task)
 
 
-def run_tasks(pool: Pool, tasks: list[dict]) -> list:
-    """`scan` of every task, in order. Points already in <name>.csv are not simulated again."""
+def _run_tasks(pool: Pool, tasks: list[dict]) -> list:
+    """`_scan` of every task, in order; each point it simulates lands in the CSV as soon as it is done."""
     out = [None] * len(tasks)
     with tqdm(total=len(tasks), unit="dir", desc=tasks[0]["scheme"] if tasks else None) as bar:
-        for i, lf in pool.imap_unordered(_indexed, list(enumerate(tasks))):
+        for i, lf in pool.imap_unordered(_indexed, enumerate(tasks)):
             out[i] = lf
             bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
-                                f"{100 * threshold_from_log_fail(lf)[0]:.3f}%")
+                                f"{100 * _threshold_from_log_fail(lf)[0]:.3f}%")
             bar.update()
     return out
 
 
-def direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
+def _direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
     """(theta, phi, length) of the point (p_G, p_T, p_R)."""
     return np.arctan2(p_r, np.hypot(p_g, p_t)), np.arctan2(p_t, p_g), float(np.sqrt(p_g ** 2 + p_t ** 2 + p_r ** 2))
 
 
-def run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
-    """Each task in the Z and the X basis, `combine`d."""
-    lfs = run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"])
-    return [combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
+def _run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
+    """Each task in the Z and the X basis, `_combine`d."""
+    lfs = _run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"])
+    return [_combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
 
 
-def run(args, pool: Pool, bias_only: bool = False) -> dict:
-    base = dict(scheme=args.scheme, distances=args.distances, shots=args.shots, batch=args.batch,
+def _run(args, pool: Pool, bias_only: bool = False) -> dict:
+    base = dict(scheme=args.scheme, code=args.code, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
-                retries=args.retries, code=args.code)
+                retries=args.retries, cache_only=args.plot_only)
     eta = dict(eta_g=args.eta_g, eta_t=args.eta_t)
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
         coarse = list(np.geomspace(1e-3, 0.3, 16))
-        tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))]
+        tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in AXES]
         print("coarse scan along the three axes", flush=True)
-        found = [r["p_th"] for r in run_both(pool, tasks)]
+        found = [r["p_th"] for r in _run_both(pool, tasks)]
         axes = [a if a is not None else (f or 0.05) for a, f in zip(axes, found)]
         print("axis thresholds p_G, p_T, p_R:", ", ".join(f"{a:.4f}" for a in axes), flush=True)
     p_g_max, p_t_max, p_r_max = axes
@@ -213,7 +312,7 @@ def run(args, pool: Pool, bias_only: bool = False) -> dict:
     spread = np.linspace(1 - args.delpth, 1 + args.delpth, args.num_p)
     surface = []
     for p_g, p_t, p_r in grid:
-        theta, phi, guess = direction(p_g, p_t, p_r)
+        theta, phi, guess = _direction(p_g, p_t, p_r)
         surface.append(dict(base, **eta, theta=theta, phi=phi, errors=list(guess * spread)))
     # (c): pure gate noise vs eta_G, pure idling vs eta_T, from about 0 to twice the axis threshold
     biases = list(np.logspace(-2, 2, args.nbias))
@@ -224,8 +323,8 @@ def run(args, pool: Pool, bias_only: bool = False) -> dict:
 
     groups = {"g_bias": g_bias, "t_bias": t_bias} if bias_only else {"surface": surface, "g_bias": g_bias, "t_bias": t_bias}
     print("bias directions" if bias_only else "surface and bias directions", flush=True)
-    results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks]))
-    data = dict(settings=vars(args), axes=axes)
+    results = iter(_run_both(pool, [task for tasks in groups.values() for task in tasks]))
+    data = dict(settings={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}, axes=axes)
     for key, tasks in groups.items():
         data[key] = []
         for task, result in zip(tasks, results):
@@ -234,20 +333,22 @@ def run(args, pool: Pool, bias_only: bool = False) -> dict:
     return data
 
 
-AXES = ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))  # (theta, phi) of pure gate, idling and readout noise
-
-
-def summary_rows(data: dict) -> list[dict]:
-    """`data` (run's) as the rows of <name>_thresholds.csv."""
+def _write_summary(data: dict, path: Path) -> None:
+    """`_run`'s data as <name>_thresholds.csv: the three axis thresholds, then a row per direction of each group."""
     s = data["settings"]
-    common = dict(scheme=s["scheme"], code=s["code"], decoder=s["decoder"], distances=" ".join(map(str, s["distances"])))
+    common = dict(scheme=s["scheme"], code=s["code"], decoder=s["decoder"],
+                  distances=" ".join(map(str, s["distances"])))
     rows = [dict(common, group="axis", theta=t, phi=f, eta_g=s["eta_g"], eta_t=s["eta_t"], p_th=a)
             for (t, f), a in zip(AXES, data["axes"])]
-    return rows + [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
+    rows += [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-def data_from_summary(rows: list[dict]) -> dict:
-    """The rows of <name>_thresholds.csv back as `run`'s data."""
+def _data_from_summary(rows: list[dict]) -> dict:
+    """The rows of <name>_thresholds.csv back as `_run`'s data."""
     axis = [r for r in rows if r["group"] == "axis"]
     first = axis[0]
     settings = dict(scheme=first["scheme"], code=first["code"], decoder=first["decoder"],
@@ -257,27 +358,7 @@ def data_from_summary(rows: list[dict]) -> dict:
                 **{g: [r for r in rows if r["group"] == g] for g in ("surface", "g_bias", "t_bias")})
 
 
-def write_summary(rows: list[dict], path: Path) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-class Arrow3D(FancyArrowPatch):
-    """An arrow between two 3D points (Threshold_surfaces_demo.ipynb)."""
-
-    def __init__(self, xs, ys, zs, *args, **kwargs):
-        super().__init__((0, 0), (0, 0), *args, **kwargs)
-        self._verts3d = xs, ys, zs
-
-    def do_3d_projection(self, renderer=None):
-        xs, ys, zs = proj3d.proj_transform(*self._verts3d, self.axes.M)
-        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
-        return np.min(zs)
-
-
-def plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> None:
+def _plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> None:
     """IBM's plot_3d_threshold for one logical: threshold points in (p_G, p_T, p_R) in %, the surface through
     them interpolated, both coloured by p_th."""
     pts = [(r["p_th"] * np.cos(r["theta"]) * np.cos(r["phi"]), r["p_th"] * np.cos(r["theta"]) * np.sin(r["phi"]),
@@ -306,13 +387,13 @@ def plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> No
     ax.view_init(elev=20, azim=20)
 
 
-def plot(data: dict, png: Path) -> None:
+def _plot(data: dict, png: Path) -> None:
     """(b) the threshold surface with the bias ranges of (c) as arrows on its axes, (c) p_T^th vs eta_T and
     p_G^th vs eta_G (IBM's bias figure), dotted lines at the eta the surface used."""
     s = data["settings"]
     fig = plt.figure(figsize=(11, 4.5))
     ax_b = fig.add_subplot(1, 2, 1, projection="3d")
-    plot_surface(ax_b, data["surface"])
+    _plot_surface(ax_b, data["surface"])
     g = [(r["eta_g"], 100 * r["p_th"]) for r in data["g_bias"] if r["p_th"] > 0]
     t = [(r["eta_t"], 100 * r["p_th"]) for r in data["t_bias"] if r["p_th"] > 0]
     for pts, xyz, color in ((g, lambda lo, hi: ([lo, hi], [0, 0], [0, 0]), "b"),
@@ -346,67 +427,6 @@ def plot(data: dict, png: Path) -> None:
     fig.tight_layout()
     fig.savefig(png, dpi=200, bbox_inches="tight")
     plt.close(fig)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--scheme", choices=SCHEMES, default="pairs")
-    parser.add_argument("--code", choices=CODES, default="css", help="css, or x3z3: the X3Z3 Floquet code")
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
-    parser.add_argument("--decoder", choices=["uniform", "dem"], default="uniform",
-                        help="uniform: IBM's bias-blind weights (default); dem: weights from the exact noise")
-    parser.add_argument("--eta-g", type=float, default=1.0, help="2-qubit / 1-qubit gate error, for (b)")
-    parser.add_argument("--eta-t", type=float, default=20.0, help="dephasing / relaxation idling, for (b)")
-    parser.add_argument("--pg", type=float, help="threshold along pure gate noise, to aim the grid")
-    parser.add_argument("--pt", type=float, help="threshold along pure idling")
-    parser.add_argument("--pr", type=float, help="threshold along pure readout")
-    parser.add_argument("--nphi", type=int, default=6, help="grid of (b): nphi (nphi + 1) / 2 directions")
-    parser.add_argument("--nbias", type=int, default=9, help="eta values from 0.01 to 100 for (c)")
-    parser.add_argument("--num-p", type=int, default=10, help="error rates per direction")
-    parser.add_argument("--bias-num-p", type=int, help="error rates per direction of (c), default --num-p")
-    parser.add_argument("--delpth", type=float, default=0.5, help="(b) scans p_guess * (1 +- delpth)")
-    parser.add_argument("--bias-delpth", type=float, default=1.0, help="(c) scans p_axis * (1 +- this)")
-    parser.add_argument("--shots", type=int, default=20_000, help="most shots per point")
-    parser.add_argument("--batch", type=int, default=2_000)
-    parser.add_argument("--max-fail", type=int, default=2_000, help="stop a point at this many logical errors")
-    parser.add_argument("--max-fail-rate", type=float, default=0.45, help="stop raising p past this LER")
-    parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
-    parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--out", type=Path, help="writes <out>.csv, <out>_thresholds.csv and <out>.png")
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>_thresholds.csv")
-    parser.add_argument("--bias-only", action="store_true",
-                        help="run only (c) and replace it in <out>_thresholds.csv, keeping its surface and axes")
-    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
-    args = parser.parse_args()
-
-    if args.out is None:
-        folder = (ROOT / "results" / "two_ancillas" if args.scheme == "pairs"
-                  else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
-        args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
-                             f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
-    # not with_suffix: a name like ..._etaG0.5_... has a dot of its own
-    points, summary, png = (args.out.parent / (args.out.name + end) for end in (".csv", "_thresholds.csv", ".png"))
-    if args.plot_only:
-        data = data_from_summary(saved_rows(summary))
-    else:
-        start_csv(points, POINT_FIELDS, args.sources)
-        old = saved_rows(summary) if args.bias_only else []
-        if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
-            axes = [r["p_th"] for r in old if r["group"] == "axis"]
-            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr), axes))
-        cache = {point_key(r, POINT_KEY): r["errors"] / r["shots"] for r in saved_rows(points)}
-        print(f"{len(cache)} points already in {points}", flush=True)
-        with Pool(args.workers, initializer=_init, initargs=(cache, points)) as pool:
-            data = run(args, pool, args.bias_only)
-        rows = summary_rows(data)
-        if args.bias_only:  # keep the saved surface
-            rows += [r for r in old if r["group"] == "surface"]
-        write_summary(rows, summary)
-        data = data_from_summary(saved_rows(summary))
-    for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
-        print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
-    plot(data, png)
-    print(f"wrote {summary}, {png}")
 
 
 if __name__ == "__main__":
