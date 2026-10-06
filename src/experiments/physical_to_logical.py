@@ -1,7 +1,7 @@
 """Memory experiment for every readout scheme, decoded the same way: logical error rate vs p.
 
-    .venv/bin/python src/single_ancilla/decode.py --distances 3 5 --noise spin --eta 10 --shots 10000
-    .venv/bin/python src/single_ancilla/decode.py --schemes method_a method_b method_c
+    .venv/bin/python src/experiments/physical_to_logical.py --distances 3 5 --noise spin --eta 10 --shots 10000
+    .venv/bin/python src/experiments/physical_to_logical.py --schemes method_a method_b method_c
 
 "pairs" is src/two_ancillas/pairs.py's syndrome + reference ancilla pair on every edge; the rest have one ancilla per
 edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (src/single_ancilla/<name>/). All run through
@@ -86,7 +86,7 @@ def main() -> None:
     parser.add_argument("--p-max", type=float, default=1e-2)
     parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
     parser.add_argument("--shots", type=int, default=10_000)
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/physical_to_logical"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     args = parser.parse_args()

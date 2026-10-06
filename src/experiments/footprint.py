@@ -1,10 +1,11 @@
 """How many physical qubits each readout scheme needs at one physical error rate: logical error rate vs qubit
 count, one line per scheme, extrapolated to a target logical error rate.
 
-    .venv/bin/python src/single_ancilla/footprint.py --p 1e-3 --distances 3 5 --shots 10000000 --target 1e-6 \
+    .venv/bin/python src/experiments/footprint.py --p 1e-3 --distances 3 5 --shots 10000000 --target 1e-6 \
         --schemes method_a method_b method_c --out results/single_ancilla/footprint
+    .venv/bin/python src/experiments/footprint.py --codes css x3z3 --eta 1000   # X3Z3 vs CSS Floquet code
 
-Each point is decode.py's memory experiment (d rounds at distance d) at p, decoded by matching. The LER falls
+Each point is physical_to_logical.py's Z memory experiment (d rounds at distance d) at p, decoded by matching. The LER falls
 exponentially in d, so a straight line through log(LER) vs d (points with at least one logical error) gives
 the d where it reaches --target; the qubit count there is the scheme's qubits per d^2 times d^2. Points with no
 errors are left out: at low p the largest distances need a lot of shots to show any.
@@ -12,7 +13,8 @@ errors are left out: at low p the largest distances need a lot of shots to show 
 Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
 qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
 Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (memory.run_points), so a rerun
-picks up where a run stopped; --plot-only redraws the PNG from <out>.csv.
+picks up where a run stopped; --plot-only redraws the PNG from <out>.csv. With more than one of --codes, X3Z3
+markers are filled and CSS ones hollow, one fit per (code, scheme).
 """
 import argparse
 import math
@@ -24,15 +26,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
-from floquet import memory_circuit
+from floquet import CODES, memory_circuit
 from memory import logical_errors, read_rows, run_points
 from noise import NOISE_MODELS, add_noise
+from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
+    parser.add_argument("--codes", nargs="+", choices=CODES, default=["css"], help="css and/or x3z3")
     parser.add_argument("--distances", type=int, nargs="+", default=[3, 5, 7])
     parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
     parser.add_argument("--eta", type=float, default=10.0)
@@ -47,36 +50,36 @@ def main() -> None:
 
     if args.plot_only:
         rows = read_rows(args.out.with_suffix(".csv"))
-        args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
     else:
-        tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
-                      shots_max=args.shots, max_errors=args.max_errors) for name in args.schemes for d in args.distances]
+        tasks = [dict(scheme=name, code=code, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
+                      shots_max=args.shots, max_errors=args.max_errors)
+                 for code in args.codes for name in args.schemes for d in args.distances]
         rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers)
-    for name in args.schemes:
-        fit = _qubits_needed([r for r in rows if r["scheme"] == name], args.target)
-        print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
-                                "not enough distances with errors to fit (more shots or larger p)"))
+    for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
+        fit = _qubits_needed([r for r in rows if (r["code"], r["scheme"]) == (code, name)], args.target)
+        print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
+                                         "not enough distances with errors to fit (more shots or larger p)"))
     _plot(rows, args.target, args.out.with_suffix(".png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 
 @lru_cache(maxsize=None)
-def _circuit(scheme: str, distance: int):
+def _circuit(scheme: str, distance: int, code: str):
     """The noiseless memory circuit, d rounds: once per worker."""
-    return memory_circuit(distance, distance, SCHEMES[scheme])
+    return memory_circuit(distance, distance, SCHEMES[scheme], code=code)
 
 
 def _point(task: dict) -> dict:
-    """One (scheme, distance) point: its qubit count and LER at p, from up to shots_max shots, stopping at
+    """One (scheme, code, distance) point: its qubit count and LER at p, from up to shots_max shots, stopping at
     max_errors logical errors."""
-    c = _circuit(task["scheme"], task["distance"])
+    c = _circuit(task["scheme"], task["distance"], task["code"])
     errors, ran = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])), task["shots_max"],
                                  task["max_errors"])
     return dict(task, qubits=c.num_qubits, shots=ran, errors=errors, ler=errors / ran)
 
 
 def _qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
-    """(slope, intercept, qubits) of the fit log(LER) = intercept + slope * d for one scheme's rows, with the
+    """(slope, intercept, qubits) of the fit log(LER) = intercept + slope * d for one (code, scheme)'s rows, with the
     qubit count where it crosses `target`; None without two distances that saw errors, or if the LER doesn't
     fall with d (p above threshold)."""
     pts = [(r["distance"], math.log(r["ler"])) for r in rows if r["errors"]]
@@ -97,24 +100,29 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
     fig, ax = plt.subplots(figsize=(9.2, 5.2))
     fig.subplots_adjust(left=0.10, right=0.70)
     schemes = list(dict.fromkeys(r["scheme"] for r in rows))
+    codes = list(dict.fromkeys(r["code"] for r in rows))
     fits = []
-    for name in schemes:
-        mine = [r for r in rows if r["scheme"] == name]
+    for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
+        mine = [r for r in rows if (r["code"], r["scheme"]) == (code, name)]
         ls, marker = STYLES[name]
+        hollow = len(codes) > 1 and code == "css"
         for r in mine:
             if r["errors"]:
                 lo, hi = clopper_pearson(r["errors"], r["shots"])
+                colour = DISTANCE_COLOUR[r["distance"]]
                 ax.errorbar(r["qubits"], r["ler"], yerr=[[r["ler"] - lo], [hi - r["ler"]]], marker=marker,
-                            color=DISTANCE_COLOUR[r["distance"]], ms=6, lw=1, capsize=2, ls="none")
+                            color=colour, mfc="white" if hollow else colour, ms=6, lw=1, capsize=2, ls="none")
         fit = _qubits_needed(mine, target)
         if fit:
             slope, intercept, needed = fit
             per_d2 = mine[0]["qubits"] / mine[0]["distance"] ** 2
             ds = np.linspace(min(r["distance"] for r in mine), math.sqrt(needed / per_d2), 50)
-            ax.plot(per_d2 * ds ** 2, np.exp(intercept + slope * ds), ls=ls, color="0.35", lw=1)
-            ax.plot(needed, target, marker="*", color="0.35", ms=9)
-            fits.append(Line2D([], [], ls=ls, color="0.35",
-                               label=f"{name}: {needed:,.0f} qubits, Λ = {math.exp(-2 * slope):.1f}"))
+            grey = "0.7" if hollow else "0.35"
+            ax.plot(per_d2 * ds ** 2, np.exp(intercept + slope * ds), ls=ls, color=grey, lw=1)
+            ax.plot(needed, target, marker="*", color=grey, ms=9)
+            label = f"{code}, {name}" if len(codes) > 1 else name
+            fits.append(Line2D([], [], ls=ls, color=grey,
+                               label=f"{label}: {needed:,.0f} qubits, Λ = {math.exp(-2 * slope):.1f}"))
     ax.axhline(target, color="0.5", ls=":", lw=1)
     ax.set_xscale("function", functions=(np.sqrt, np.square))
     ax.set_yscale("log")
