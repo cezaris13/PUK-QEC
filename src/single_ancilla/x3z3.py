@@ -22,23 +22,19 @@ Each finished point is appended to <out>.csv at once, and a rerun with the same 
 there, so a cut-short run picks up where it stopped. Points with no logical errors are left out of the plots.
 """
 import argparse
-import csv
 import os
 from functools import lru_cache
-from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
 
-from decode import SCHEMES  # also puts src/shared on the path
+from decode import SCHEMES
 from floquet import CODES, memory_circuit
-from memory import logical_errors
+from memory import logical_errors, run_points
 from noise import NOISE_MODELS, add_noise
 from x3z3_plots import plot
 
 ROOT = Path(__file__).resolve().parents[2]
-KEY = ("code", "scheme", "distance", "eta", "p", "basis", "noise", "shots_max", "max_errors")
-FIELDS = KEY + ("qubits", "shots", "errors")
 
 
 @lru_cache(maxsize=None)
@@ -52,31 +48,6 @@ def point(task: dict) -> dict:
     errors, shots = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])),
                                    task["shots_max"], task["max_errors"])
     return dict(task, qubits=c.num_qubits, shots=shots, errors=errors)
-
-
-def key(row: dict) -> tuple:
-    return tuple(str(row[k]) for k in KEY)
-
-
-def run(tasks: list[dict], csv_path: Path, workers: int) -> None:
-    """Every task not already in `csv_path`, appended to it as it finishes."""
-    done = set()
-    if csv_path.exists():
-        done = {key(r) for r in csv.DictReader(csv_path.open())}
-    todo = [t for t in tasks if key(t) not in done]
-    print(f"{len(tasks) - len(todo)} of {len(tasks)} points already in {csv_path}", flush=True)
-    new = not csv_path.exists()
-    with open(csv_path, "a", newline="") as f, Pool(workers) as pool:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
-        if new:
-            writer.writeheader()
-        # slowest first (largest distance, then highest p), so the last workers aren't left with one big job
-        todo.sort(key=lambda t: (-t["distance"], -t["p"]))
-        for n, row in enumerate(pool.imap_unordered(point, todo), 1):
-            writer.writerow(row)
-            f.flush()
-            if n % 50 == 0 or n == len(todo):
-                print(f"  {n} / {len(todo)}", flush=True)
 
 
 def main() -> None:
@@ -103,13 +74,13 @@ def main() -> None:
             f"_shots{args.shots}")
     csv_path = args.out.with_suffix(".csv")
     if not args.plot_only:
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
         ps = sorted(set(np.geomspace(args.p_min, args.p_max, args.num).tolist()) | {args.p_fixed})
         tasks = [dict(code=c, scheme=s, distance=d, eta=eta, p=p, basis=b, noise=args.noise, shots_max=args.shots,
                       max_errors=args.max_errors)
                  for c in args.codes for s in args.schemes for d in args.distances for eta in args.etas
                  for p in ps for b in "ZX"]
-        run(tasks, csv_path, args.workers)
+        # slowest first (largest distance, then highest p), so the last workers aren't left with one big job
+        run_points(csv_path, sorted(tasks, key=lambda t: (-t["distance"], -t["p"])), point, args.workers)
     for png in plot(csv_path, args.out, args.p_fixed):
         print(f"wrote {png}")
 

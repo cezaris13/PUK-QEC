@@ -96,6 +96,9 @@ def hex_positions(distance: int) -> dict[complex, complex]:
     return positions
 
 
+COLOUR_NAMES = ["blue", "red", "green"]  # colour 0, 1, 2, as drawing.COLORS draws them
+
+
 def step_colour(r: int) -> int:
     """The colour step r measures. Colours 0, 1, 2 are b, r, g, so the schedule rX gZ bX rZ gX bZ is
     colour 1, 2, 0, 1, 2, 0 with Pauli X, Z alternating."""
@@ -121,12 +124,60 @@ def check_paulis(pauli: str, data: Iterable[complex], code: str = "css") -> str:
     return "".join("ZX"["XZ".index(pauli)] if code == "x3z3" and shaded(q) else pauli for q in data)
 
 
-def aligned(checks: list[list]) -> list[tuple]:
+Layers = list[list[tuple[str, list[int]]]]  # one check's gate layers, each a list of (gate, targets)
+
+
+def collect(pauli: str, d0: int, d1: int, s0: int, s1: int | None = None) -> tuple:
+    """The core every scheme's check shares: (reset, first, second, turn) putting P_d0 P_d1 onto a syndrome spin.
+    `pauli` is "X", "Y", "Z" or two letters (P_d0 P_d1, as check_paulis gives). ZZ: the syndrome starts in |0> and
+    each data qubit CXs onto it. Otherwise it starts in |+>, controls each data qubit's Pauli (CZ kicks Z_d back
+    onto its X), and `turn`, one H layer, makes that X the Z a spin-blockade readout sees. The second gate acts on
+    s1, where the syndrome is by then (pairs SWAPs it between the two); s0 if None."""
+    s1 = s0 if s1 is None else s1
+    p0, p1 = pauli * 2 if len(pauli) == 1 else pauli
+    if p0 == p1 == "Z":
+        return ("R", [s0]), ("CX", [d0, s0]), ("CX", [d1, s1]), []
+    return ("RX", [s0]), (f"C{p0}", [s0, d0]), (f"C{p1}", [s1, d1]), [[("H", [s1])]]
+
+
+def aligned(checks: list[Layers]) -> list[tuple]:
     """Layer k of every check together, as zip(*checks), but with shorter checks padded with empty layers at the
     front so all end, and read out, in the same layer: an X3Z3 step mixes ZZ checks with XZ ones, which need
     one more layer (the H). In the CSS code every check of a step has the same length and nothing changes."""
     n = max(map(len, checks))
     return list(zip(*[[[]] * (n - len(c)) + list(c) for c in checks]))
+
+
+def step_circuit(coords: dict[int, complex], checks: list[Layers], before: Layers = (), after: Layers = ()):
+    """A step: QUBIT_COORDS (stim index -> where diagrams draw it), then the layers `before`, every check's layers
+    `aligned`, and `after`, a TICK after each."""
+    circuit = stim.Circuit()
+    for i, xy in coords.items():
+        circuit.append("QUBIT_COORDS", [i], [xy.real, xy.imag])
+    for layer in [*([part] for part in before), *aligned(checks), *([part] for part in after)]:
+        for part in layer:
+            for name, targets in part:
+                circuit.append(name, targets)
+        circuit.append("TICK")
+    return circuit
+
+
+def check_scheme(distance: int, step: Callable[..., stim.Circuit], checked: Callable[[int], list], q2i: dict) -> None:
+    """In every code: record j of step r holds the parity of checked(r)[j] = (u, v) with `check_paulis`' Paulis (a
+    stim flow), every data qubit ends where it started, and the memory experiment's detectors are deterministic.
+    `step(distance, r, code=code)` is the scheme's step, q2i data qubit -> stim index."""
+    for code in CODES:
+        for r in range(6):
+            circuit, pauli = step(distance, r, code=code), "XZ"[r % 2]
+            for j, (u, v) in enumerate(checked(r)):
+                parity = stim.PauliString(circuit.num_qubits)
+                parity[q2i[u]], parity[q2i[v]] = check_paulis(pauli, (u, v), code)
+                assert circuit.has_flow(stim.Flow(input=parity, measurements=[j])), (code, r, j)
+            for d in qubits(distance):  # one at a time: a readout copies a pair's parity onto its ancillas too
+                single = stim.PauliString(circuit.num_qubits)
+                single[q2i[d]] = check_paulis(pauli, [d], code)
+                assert circuit.has_flow(stim.Flow(input=single, output=single)), (code, r, d)
+        memory_circuit(distance, 2, step, code=code).detector_error_model(allow_gauge_detectors=False)
 
 
 def memory_circuit(distance: int, rounds: int,
@@ -196,15 +247,22 @@ def memory_circuit(distance: int, rounds: int,
     observable: list[int] = []
     in_band = lambda pair: pair[0].imag in (0, 1) and pair[1].imag in (0, 1)
 
+    edges, steps = edge_list(distance), {}
     for s in range(6 * rounds):
         # Schedule rX gZ bX rZ gX bZ: Pauli alternates X, Z; colour cycles 1, 2, 0.
         pauli, other_pauli, colour = "XZ"[(s + offset) % 2], "ZX"[(s + offset) % 2], step_colour(s + offset)
-        circuit += step(distance, s + offset, code=code)
+        r = (s + offset) % 6
+        if r not in steps:  # a step depends on r only through r % 6: build each of the six once, and declare
+            steps[r] = step(distance, r, code=code)  # its qubits' coordinates only the first time any step runs
+            if len(steps) > 1:
+                steps[r] = stim.Circuit("\n".join(l for l in str(steps[r]).splitlines()
+                                                  if not l.startswith("QUBIT_COORDS")))
+        circuit += steps[r]
 
         # One measurement per edge of this colour, in `edge_list` order (as every `step` makes them).
         # edge's two data qubits -> the number of its measurement.
         measured = {e.data: count + i
-                    for i, e in enumerate(e for e in edge_list(distance) if e.colour == colour)}
+                    for i, e in enumerate(e for e in edges if e.colour == colour)}
         count += len(measured)
 
         for h, c in colour_of.items():

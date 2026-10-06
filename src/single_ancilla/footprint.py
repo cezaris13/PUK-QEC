@@ -11,30 +11,38 @@ errors are left out: at low p the largest distances need a lot of shots to show 
 
 Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
 qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
-Lambda = LER(d) / LER(d + 2). --plot-only redraws the PNG from <out>.csv.
+Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (memory.run_points), so a rerun
+picks up where a run stopped; --plot-only redraws the PNG from <out>.csv.
 """
 import argparse
-import csv
 import math
+import os
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks, read_rows
+from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
 from floquet import memory_circuit
-from memory import sweep
-from noise import NOISE_MODELS
+from memory import logical_errors, read_rows, run_points
+from noise import NOISE_MODELS, add_noise
 
 
-def measure(schemes: list[str], distances: list[int], noise: str, eta: float, p: float, shots: int,
-            max_errors: int) -> list[dict]:
-    """One row per (scheme, distance): its qubit count and the LER at p, from up to `shots` shots, stopping at
-    `max_errors` logical errors."""
-    return [dict(scheme=name, qubits=memory_circuit(d, 1, SCHEMES[name]).num_qubits, **row)
-            for name in schemes for d in distances
-            for row in sweep(d, d, noise, eta, [p], shots, SCHEMES[name], max_errors)]
+@lru_cache(maxsize=None)
+def circuit(scheme: str, distance: int):
+    """The noiseless memory circuit, d rounds: once per worker."""
+    return memory_circuit(distance, distance, SCHEMES[scheme])
+
+
+def point(task: dict) -> dict:
+    """One (scheme, distance) point: its qubit count and LER at p, from up to shots_max shots, stopping at
+    max_errors logical errors."""
+    c = circuit(task["scheme"], task["distance"])
+    errors, ran = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])), task["shots_max"],
+                                 task["max_errors"])
+    return dict(task, qubits=c.num_qubits, shots=ran, errors=errors, ler=errors / ran)
 
 
 def qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
@@ -104,6 +112,7 @@ def main() -> None:
     parser.add_argument("--max-errors", type=int, default=100, help="stop a point at this many logical errors")
     parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     args = parser.parse_args()
 
@@ -111,12 +120,9 @@ def main() -> None:
         rows = read_rows(args.out.with_suffix(".csv"))
         args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
     else:
-        rows = measure(args.schemes, args.distances, args.noise, args.eta, args.p, args.shots, args.max_errors)
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.out.with_suffix(".csv"), "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0])
-            writer.writeheader()
-            writer.writerows(rows)
+        tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
+                      shots_max=args.shots, max_errors=args.max_errors) for name in args.schemes for d in args.distances]
+        rows = run_points(args.out.with_suffix(".csv"), tasks, point, args.workers)
     for name in args.schemes:
         fit = qubits_needed([r for r in rows if r["scheme"] == name], args.target)
         print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else

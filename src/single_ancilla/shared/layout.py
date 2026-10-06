@@ -1,10 +1,7 @@
 """The one-ancilla lattice every single-ancilla method uses: one spin ancilla at the midpoint of each edge,
 where it is drawn, and drawing each tick's qubits with their own kinds."""
 import re
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 from drawing import label_qubits, style_qubits
 import floquet
 from floquet import hex_positions, qubits, torus

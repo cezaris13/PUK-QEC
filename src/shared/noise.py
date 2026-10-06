@@ -224,10 +224,22 @@ NOISE_MODELS = {
 }
 
 
-def _flip_after_reset(circuit: stim.Circuit, gate_name: str, qubits: list[int], term: NoiseTerm) -> None:
-    """Append `term`'s reset error: a flip that actually flips the state `gate_name` prepared."""
+def _line(name: str, targets: str | list[int], args=()) -> str:
+    """One instruction as stim text: name(args) targets, `targets` as text or qubit indices."""
+    targets = targets if isinstance(targets, str) else " ".join(map(str, targets))
+    return f"{name}({','.join(repr(float(a)) for a in args)}) {targets}" if args else f"{name} {targets}"
+
+
+def _targets(inst: stim.CircuitInstruction) -> str:
+    """`inst`'s targets as stim text (rec[-1], !3, X5, ... kept as written)."""
+    text = str(inst)
+    return text[text.index(") ") + 2:] if text.startswith(inst.name + "(") else text[len(inst.name) + 1:]
+
+
+def _flip_after_reset(out: list[str], gate_name: str, qubits: list[int], term: NoiseTerm) -> None:
+    """Add `term`'s reset error: a flip that actually flips the state `gate_name` prepared."""
     if term.gate_noise_name:
-        circuit.append("Z_ERROR" if gate_name.endswith("X") else "X_ERROR", qubits, term.gate_noise_probs[0])
+        out.append(_line("Z_ERROR" if gate_name.endswith("X") else "X_ERROR", qubits, term.gate_noise_probs[:1]))
 
 
 def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None = None) -> stim.Circuit:
@@ -238,11 +250,14 @@ def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None
     result -- readout misassignment, which leaves the qubit alone. Qubits no gate touches in a layer
     get that layer's idle noise, and in a layer that measures they also get `round_noise`: the wait
     while the ancillas are read out.
+
+    Built as text and parsed once: stim.Circuit.append costs ~20 us a call, which on a d = 7 memory circuit
+    was most of the run time.
     """
     if qubits is None:
         qubits = sorted({t.qubit_value for inst in circuit.flattened() for t in inst.targets_copy()
                          if t.qubit_value is not None})
-    out = stim.Circuit()
+    out: list[str] = []
     touched: set[int] = set()
     terms: list[NoiseTerm] = []
     measured = False
@@ -252,9 +267,9 @@ def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None
         idle = [q for q in qubits if q not in touched]
         term = next((t for t in terms if t.idle_noise_name), None)
         if idle and term:
-            out.append(term.idle_noise_name, idle, term.idle_noise_probs)
+            out.append(_line(term.idle_noise_name, idle, term.idle_noise_probs))
         if idle and measured and model.round_noise_name:
-            out.append(model.round_noise_name, idle, model.round_noise_probs)
+            out.append(_line(model.round_noise_name, idle, model.round_noise_probs))
         touched.clear()
         terms.clear()
         measured = False
@@ -262,36 +277,35 @@ def add_noise(circuit: stim.Circuit, model: NoiseModel, qubits: list[int] | None
     for inst in circuit:
         if isinstance(inst, stim.CircuitRepeatBlock):
             end_layer()
-            out.append(stim.CircuitRepeatBlock(inst.repeat_count, add_noise(inst.body_copy(), model, qubits)))
+            out.append(f"REPEAT {inst.repeat_count} {{\n{add_noise(inst.body_copy(), model, qubits)}\n}}")
             continue
         if inst.name == "TICK":
             end_layer()
-            out.append(inst)
+            out.append("TICK")
             continue
         gate = stim.gate_data(inst.name)
-        targets = inst.targets_copy()
-        gate_qubits = [t.qubit_value for t in targets if t.qubit_value is not None]
+        gate_qubits = [t.qubit_value for t in inst.targets_copy() if t.qubit_value is not None]
         if gate.produces_measurements:
             m = model.M_gate
-            out.append(inst.name, targets, m.gate_noise_probs[0]) if m.gate_noise_name else out.append(inst)
+            out.append(_line(inst.name, _targets(inst), m.gate_noise_probs[:1]) if m.gate_noise_name else str(inst))
             if gate.is_reset:
                 _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
             terms.append(m)
             measured = True
         elif gate.is_reset:
-            out.append(inst)
+            out.append(str(inst))
             _flip_after_reset(out, gate.name, gate_qubits, model.R_gate)
             terms.append(model.R_gate)
         elif gate.is_unitary:
             term = ({"CZ": model.CZ_gate, "SWAP": model.SWAP_gate}.get(gate.name, model.CX_gate)
                     if gate.is_two_qubit_gate else model.H_gate)
-            out.append(inst)
+            out.append(str(inst))
             if term.gate_noise_name:
-                out.append(term.gate_noise_name, targets, term.gate_noise_probs)
+                out.append(_line(term.gate_noise_name, _targets(inst), term.gate_noise_probs))
             terms.append(term)
         else:  # annotations (DETECTOR, QUBIT_COORDS, ...) pass straight through
-            out.append(inst)
+            out.append(str(inst))
             continue
         touched.update(gate_qubits)
     end_layer()
-    return out
+    return stim.Circuit("\n".join(out))

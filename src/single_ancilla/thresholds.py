@@ -29,9 +29,12 @@ never relaxation-like X errors. Where the curves don't cross inside the scanned 
 towards the threshold, up to --retries times. Without --pg/--pt/--pr the axis thresholds that aim the grid come
 from a coarse scan first.
 
-Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.json with
-every simulated point and threshold, and <name>.png. Each direction is saved to <name>.partial.jsonl as it
-finishes, so rerunning the same command after a crash only runs the directions still missing.
+Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.csv with
+every simulated point, one row per (direction, basis, distance, p) appended as soon as it is done, and
+<name>.png, and <name>.json, the thresholds found (what the viewer behind `make serve` reads; derived, like the
+PNG). Each scan reads its points from the CSV before simulating any, so rerunning the same command after a crash
+only runs the points still missing, and a rerun with other settings (more NBIAS, say) reuses every point they
+share; --plot-only replays the scans from the CSV alone, or draws an older run's <name>.json if it has no CSV.
 """
 # Parts of this file are adapted from IBM's QEC-with-spin-qubits, (C) Copyright IBM 2023, licensed under the
 # Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0): LogFail_of_d_p,
@@ -41,6 +44,7 @@ finishes, so rerunning the same command after a crash only runs the directions s
 import argparse
 import json
 import os
+from multiprocessing import Lock
 from functools import lru_cache
 from multiprocessing import Pool
 from pathlib import Path
@@ -53,9 +57,9 @@ from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
 from tqdm import tqdm
 
-from decode import SCHEMES  # also puts src/shared on the path
+from decode import SCHEMES
 from floquet import CODES, memory_circuit
-from memory import logical_errors, uniform_matcher
+from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,21 +81,47 @@ def circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str, co
     return circuit, uniform_matcher(circuit) if decoder == "uniform" else None
 
 
+# One simulated point: what it is (POINT) and its result (shots, errors). A worker's view of <out>.csv, set by `_init`.
+POINT = ("scheme", "code", "decoder", "basis", "distance", "p", "theta", "phi", "eta_g", "eta_t", "shots_max", "batch",
+         "max_fail")
+_csv: Path | None = None
+_lock = None
+_done: dict = {}
+
+
+def _init(csv_path: Path, lock) -> None:
+    """Pool initializer: every worker reads the points already in `csv_path`, and appends new ones under `lock`."""
+    global _csv, _lock, _done
+    _csv, _lock = csv_path, lock
+    _done = {point_key(r, POINT): r for r in read_rows(csv_path)}
+
+
 def log_fail(task: dict) -> list:
     """[[d, [[p, LER], ...]], ...] for one direction: IBM's LogFail_of_d_p. Each distance runs its error rates
     in order and stops once the LER passes max_fail_rate; each point runs batches of `batch` shots until
-    `shots` or `max_fail` logical errors."""
+    `shots` or `max_fail` logical errors, or is read back from the CSV if it is there already (with
+    task["cache_only"], it has to be)."""
     out = []
     for d in task["distances"]:
-        circuit, matcher = circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"],
-                                               task.get("code", "css"))
         rows = []
         for p in task["errors"]:
             if rows and rows[-1][1] >= task["max_fail_rate"]:
                 break
-            noisy = add_noise(circuit, noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
-            errors, ran = logical_errors(noisy, task["shots"], task["max_fail"], task["batch"], matcher)
-            rows.append([float(p), errors / ran])
+            point = dict(scheme=task["scheme"], code=task["code"], decoder=task["decoder"], basis=task["basis"],
+                         distance=d, p=float(p), theta=float(task["theta"]), phi=float(task["phi"]),
+                         eta_g=float(task["eta_g"]), eta_t=float(task["eta_t"]), shots_max=task["shots"],
+                         batch=task["batch"], max_fail=task["max_fail"])
+            row = _done.get(point_key(point, POINT))
+            if row is None:
+                if task.get("cache_only"):
+                    raise KeyError(f"{point} is not in {_csv}: run without --plot-only")
+                circuit, matcher = circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"], task["code"])
+                noisy = add_noise(circuit, noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
+                errors, ran = logical_errors(noisy, task["shots"], task["max_fail"], task["batch"], matcher)
+                row = dict(point, shots=ran, errors=errors)
+                with _lock:
+                    append_row(_csv, row)
+            rows.append([float(p), row["errors"] / row["shots"]])
         out.append([d, rows])
     return out
 
@@ -147,27 +177,16 @@ def _indexed(item: tuple) -> tuple:
     return i, scan(task)
 
 
-def run_tasks(pool: Pool, tasks: list[dict], partial: Path) -> list:
-    """`scan` of every task, in order. Each result is appended to `partial` as soon as it lands, and tasks
-    already in it (from a run cut short) are not run again, so a rerun with the same settings picks up where
-    the last one stopped."""
-    done = {}
-    if partial.exists():
-        for line in partial.read_text().splitlines():
-            row = json.loads(line)
-            done[row["key"]] = row["log_fail"]
-    keys = [json.dumps(task, sort_keys=True) for task in tasks]
-    todo = [(i, tasks[i]) for i, key in enumerate(keys) if key not in done]
-    with open(partial, "a") as f, tqdm(total=len(tasks), initial=len(tasks) - len(todo), unit="dir",
-                                        desc=tasks[0]["scheme"] if tasks else None) as bar:
-        for i, lf in pool.imap_unordered(_indexed, todo):
-            done[keys[i]] = lf
-            f.write(json.dumps({"key": keys[i], "log_fail": lf}) + "\n")
-            f.flush()
+def run_tasks(pool: Pool, tasks: list[dict]) -> list:
+    """`scan` of every task, in order; each point it simulates lands in the CSV as soon as it is done."""
+    out = [None] * len(tasks)
+    with tqdm(total=len(tasks), unit="dir", desc=tasks[0]["scheme"] if tasks else None) as bar:
+        for i, lf in pool.imap_unordered(_indexed, enumerate(tasks)):
+            out[i] = lf
             bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
                                 f"{100 * threshold_from_log_fail(lf)[0]:.3f}%")
             bar.update()
-    return [done[key] for key in keys]
+    return out
 
 
 def direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
@@ -175,25 +194,23 @@ def direction(p_g: float, p_t: float, p_r: float) -> tuple[float, float, float]:
     return np.arctan2(p_r, np.hypot(p_g, p_t)), np.arctan2(p_t, p_g), float(np.sqrt(p_g ** 2 + p_t ** 2 + p_r ** 2))
 
 
-def run_both(pool: Pool, tasks: list[dict], partial: Path) -> list[dict]:
+def run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
     """Each task in the Z and the X basis, `combine`d."""
-    lfs = run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"], partial)
+    lfs = run_tasks(pool, [dict(task, basis=b) for task in tasks for b in "ZX"])
     return [combine(z, x) for z, x in zip(lfs[::2], lfs[1::2])]
 
 
-def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
-    base = dict(scheme=args.scheme, distances=args.distances, shots=args.shots, batch=args.batch,
+def run(args, pool: Pool, bias_only: bool = False) -> dict:
+    base = dict(scheme=args.scheme, code=args.code, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
-                retries=args.retries)
-    if args.code != "css":  # only then, so CSS tasks keep the keys their saved .partial.jsonl runs resume by
-        base["code"] = args.code
+                retries=args.retries, cache_only=args.plot_only)
     eta = dict(eta_g=args.eta_g, eta_t=args.eta_t)
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
         coarse = list(np.geomspace(1e-3, 0.3, 16))
         tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))]
         print("coarse scan along the three axes", flush=True)
-        found = [r["p_th"] for r in run_both(pool, tasks, partial)]
+        found = [r["p_th"] for r in run_both(pool, tasks)]
         axes = [a if a is not None else (f or 0.05) for a, f in zip(axes, found)]
         print("axis thresholds p_G, p_T, p_R:", ", ".join(f"{a:.4f}" for a in axes), flush=True)
     p_g_max, p_t_max, p_r_max = axes
@@ -215,8 +232,8 @@ def run(args, pool: Pool, partial: Path, bias_only: bool = False) -> dict:
 
     groups = {"g_bias": g_bias, "t_bias": t_bias} if bias_only else {"surface": surface, "g_bias": g_bias, "t_bias": t_bias}
     print("bias directions" if bias_only else "surface and bias directions", flush=True)
-    results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks], partial))
-    data = dict(settings=vars(args), axes=axes)
+    results = iter(run_both(pool, [task for tasks in groups.values() for task in tasks]))
+    data = dict(settings={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}, axes=axes)
     for key, tasks in groups.items():
         data[key] = []
         for task, result in zip(tasks, results):
@@ -333,8 +350,9 @@ def main() -> None:
     parser.add_argument("--max-fail-rate", type=float, default=0.45, help="stop raising p past this LER")
     parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--out", type=Path, help="writes <out>.json and <out>.png")
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.json")
+    parser.add_argument("--out", type=Path, help="writes <out>.csv (every point), <out>.json and <out>.png")
+    parser.add_argument("--plot-only", action="store_true",
+                        help="redraw <out>.png from <out>.csv, simulating nothing (or from an older run's <out>.json)")
     parser.add_argument("--bias-only", action="store_true",
                         help="run only (c) and replace it in <out>.json, keeping its surface and axes")
     args = parser.parse_args()
@@ -344,30 +362,39 @@ def main() -> None:
                   else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
         args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
-    if args.plot_only:
-        data = json.loads(args.out.with_suffix(".json").read_text())
+    csv_path, summary = args.out.with_suffix(".csv"), args.out.with_suffix(".json")
+    saved = json.loads(summary.read_text()) if summary.exists() else None
+    if args.plot_only and saved and not csv_path.exists():
+        data = saved  # a run from before the CSV: nothing to replay
+    elif args.plot_only:
+        if saved:  # aim at the saved axes: a run converted from before the CSV never kept its coarse scan
+            args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
+                                                                                  saved["axes"]))
+        try:
+            with Pool(args.workers, initializer=_init, initargs=(csv_path, Lock())) as pool:
+                data = run(args, pool)
+        except KeyError as missing:  # a point the replay needs isn't in the CSV
+            if not saved:
+                raise
+            print(f"replay incomplete ({missing}); drawing {summary.name} as saved")
+            data = saved
     else:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        saved = args.out.with_suffix(".json")
-        old = json.loads(saved.read_text()) if args.bias_only and saved.exists() else None
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        old = saved if args.bias_only else None
         if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
             args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
                                                                                   old["axes"]))
-        # its own partial file, so a bias-only run never touches a full run's
-        partial = args.out.with_suffix(".bias.partial.jsonl" if args.bias_only else ".partial.jsonl")
-        with Pool(args.workers) as pool:
-            data = run(args, pool, partial, args.bias_only)
-        data["settings"] = {k: str(v) if isinstance(v, Path) else v for k, v in data["settings"].items()}
-        if args.bias_only:
+        with Pool(args.workers, initializer=_init, initargs=(csv_path, Lock())) as pool:
+            data = run(args, pool, args.bias_only)
+        if args.bias_only:  # keep the saved surface, replace (c)
             new = data
             data = old or dict(new, surface=[])
             data.update(g_bias=new["g_bias"], t_bias=new["t_bias"], bias_settings=new["settings"])
-        saved.write_text(json.dumps(data))
-        partial.unlink()
+        summary.write_text(json.dumps(data))
     for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
         print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
     plot(data, args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.json, {args.out}.png")
+    print(f"wrote {args.out}.csv, {args.out}.json, {args.out}.png")
 
 
 if __name__ == "__main__":
