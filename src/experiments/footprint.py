@@ -14,7 +14,7 @@ Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fi
 qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
 Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (memory.run_points), so a rerun
 picks up where a run stopped; --plot-only redraws the PNG from <out>.csv. With more than one of --codes, X3Z3
-markers are filled and CSS ones hollow, one fit per (code, scheme).
+markers are filled and CSS ones hollow, one fit per (code, scheme). --sources warns if that code changed since <out>.csv was written.
 """
 import argparse
 import math
@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
     if args.plot_only:
@@ -54,11 +55,12 @@ def main() -> None:
         tasks = [dict(scheme=name, code=code, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
                       shots_max=args.shots, max_errors=args.max_errors)
                  for code in args.codes for name in args.schemes for d in args.distances]
-        rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers)
+        rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
     for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
         fit = _qubits_needed([r for r in rows if (r["code"], r["scheme"]) == (code, name)], args.target)
         print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
-                                         "not enough distances with errors to fit (more shots or larger p)"))
+                                         "no fit: under two distances with errors (more shots or larger p), or the "
+                                         "LER rises with d (p above threshold: lower p)"))
     _plot(rows, args.target, args.out.with_suffix(".png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
