@@ -1,10 +1,12 @@
 import argparse
 import csv
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, label_qubits, style_qubits, svg_png, window
 from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, memory_circuit, period
 from pairs import positions, qubit_kinds, round_circuit

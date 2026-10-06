@@ -8,12 +8,10 @@ edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (
 floquet.memory_circuit, so they share every detector and the observable, and only their step circuits (and so
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
 a graph, matched by PyMatching (docs/decoding.pdf). Writes one CSV row per (scheme, distance, p) and a plot.
-Each row is also appended to <out>.partial.jsonl as it finishes, so rerunning the same command after a crash
-only runs the points still missing.
+Each row is appended to <out>.csv as it finishes, and a rerun with the same settings skips the points already
+there, so a cut-short run picks up where it stopped; --sources warns if that code changed since.
 """
 import argparse
-import csv
-import json
 import sys
 from pathlib import Path
 
@@ -27,7 +25,7 @@ SRC = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(SRC / "shared"), str(SRC / "two_ancillas")]
 import floquet
 import pairs
-from memory import logical_errors
+from memory import append_row, logical_errors, point_key, saved_rows, start_csv
 from noise import NOISE_MODELS, add_noise
 
 for name in ("method_a", "method_b", "method_c"):
@@ -62,19 +60,6 @@ def legend_blocks(ax, schemes: list[str], distances: list[int], lines: bool) -> 
     ax.legend(handles=[Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(d))
                        for d in distances], title="Distances", fontsize=7, title_fontsize=8, loc="upper left",
               bbox_to_anchor=(1.02, 0.45), frameon=False)
-
-
-def read_rows(csv_path: Path) -> list[dict]:
-    """A CSV written here, numbers back as int or float."""
-    def number(text):
-        for kind in (int, float):
-            try:
-                return kind(text)
-            except ValueError:
-                pass
-        return text
-    with open(csv_path, newline="") as f:
-        return [{k: number(v) for k, v in row.items()} for row in csv.DictReader(f)]
 
 
 def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str]) -> dict:
@@ -127,43 +112,32 @@ def main() -> None:
     parser.add_argument("--shots", type=int, default=10_000)
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
+    csv_path = args.out.with_suffix(".csv")
     if args.plot_only:
-        plot(read_rows(args.out.with_suffix(".csv")), args.out.with_suffix(".png"))
+        plot(saved_rows(csv_path), args.out.with_suffix(".png"))
         return
 
     for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
         print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
 
     ps = list(np.geomspace(args.p_min, args.p_max, args.num))
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    partial = args.out.with_suffix(".partial.jsonl")
-    done = {}
-    if partial.exists():
-        for line in partial.read_text().splitlines():
-            row = json.loads(line)
-            done[(row["scheme"], row["distance"], row["p"])] = row
-    points = [(name, d, p) for name in args.schemes for d in args.distances for p in ps]
-    with open(partial, "a") as f, tqdm(total=len(points), initial=sum(k in done for k in points)) as bar:
-        for name, d, p in points:
-            if (name, d, p) in done:
-                continue
-            bar.set_description(f"{name} d={d}")
-            circuit = floquet.memory_circuit(d, d, SCHEMES[name])
-            errors, ran = logical_errors(add_noise(circuit, NOISE_MODELS[args.noise](p, args.eta)), args.shots)
-            done[(name, d, p)] = row = dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta,
-                                            p=float(p), shots=ran, errors=errors, ler=errors / ran)
-            f.write(json.dumps(row) + "\n")
-            f.flush()
-            bar.update()
-    rows = [done[k] for k in points]
-    with open(args.out.with_suffix(".csv"), "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(rows)
-    plot(rows, args.out.with_suffix(".png"))
-    partial.unlink()
+    fields = ("scheme", "distance", "rounds", "noise", "eta", "p", "shots_max", "shots", "errors", "ler")
+    key = ("scheme", "distance", "p")
+    start_csv(csv_path, fields, args.sources)
+    done = {point_key(r, key) for r in saved_rows(csv_path)}
+    points = [dict(scheme=name, distance=d, p=float(p)) for name in args.schemes for d in args.distances for p in ps]
+    todo = [pt for pt in points if point_key(pt, key) not in done]
+    for pt in tqdm(todo, total=len(points), initial=len(points) - len(todo)):
+        name, d, p = pt["scheme"], pt["distance"], pt["p"]
+        circuit = floquet.memory_circuit(d, d, SCHEMES[name])
+        errors, ran = logical_errors(add_noise(circuit, NOISE_MODELS[args.noise](p, args.eta)), args.shots)
+        append_row(csv_path, fields, dict(pt, rounds=d, noise=args.noise, eta=args.eta, shots_max=args.shots,
+                                          shots=ran, errors=errors, ler=errors / ran))
+    wanted = {point_key(pt, key) for pt in points}
+    plot([r for r in saved_rows(csv_path) if point_key(r, key) in wanted], args.out.with_suffix(".png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 
