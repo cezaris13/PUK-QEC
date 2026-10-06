@@ -1,5 +1,5 @@
 // Loading and reading the result files under results/: LER CSVs (physical_to_logical.py, shared/memory.py),
-// footprint CSVs (footprint.py) and threshold JSONs (thresholds.py).
+// footprint CSVs (footprint.py) and threshold summaries (thresholds.py's <name>_thresholds.csv).
 
 export const PCT = 100;
 
@@ -45,6 +45,21 @@ export interface ThresholdRun {
   t_bias: ThresholdRow[];
 }
 
+/** One row of thresholds.py's <name>_thresholds.csv: group is axis, surface, g_bias or t_bias. */
+type SummaryRow = ThresholdRow & { group: string; scheme: string; code: string; decoder: string;
+                                   distances: string | number };
+
+function thresholdRun(rows: SummaryRow[]): ThresholdRun {
+  const axis = rows.filter(r => r.group === "axis"), first = axis[0] ?? rows[0];
+  const group = (g: string) => rows.filter(r => r.group === g);
+  return {
+    settings: { scheme: first.scheme, decoder: first.decoder, eta_g: first.eta_g, eta_t: first.eta_t,
+                distances: String(first.distances).split(" ").map(Number) },
+    axes: axis.map(r => r.p_th) as [number, number, number],
+    surface: group("surface"), g_bias: group("g_bias"), t_bias: group("t_bias"),
+  };
+}
+
 export interface Results {
   ler: Series[];
   foot: Record<string, Row[]>;
@@ -63,7 +78,7 @@ export function parseCSV(text: string): Row[] {
 }
 
 export const base = (path: string) => path.split("/").pop()!;
-export const runLabel = (path: string) => base(path).replace(/\.(json|csv)$/, "");
+export const runLabel = (path: string) => base(path).replace(/(_thresholds)?\.csv$/, "");
 const SCHEME_NAME: Record<string, string> = {
   pairs: "pairs (2 ancillas)", method_a: "method A", method_b: "method B", method_c: "method C",
 };
@@ -75,9 +90,10 @@ export async function loadAll(): Promise<Results> {
   const surf: Record<string, ThresholdRun> = {};
   const texts = await Promise.all(files.map(async f => (await fetch("/" + f)).text()));
   files.forEach((f, i) => {                     // in server order, so the selects stay newest first
-    if (f.endsWith(".json")) { surf[f] = JSON.parse(texts[i]); return; }
     const rows = parseCSV(texts[i]);
-    if (!rows.length || !("ler" in rows[0])) return;
+    if (rows.length && "group" in rows[0]) { surf[f] = thresholdRun(rows as unknown as SummaryRow[]); return; }
+    // thresholds.py's <name>.csv: its raw points, already summed up in <name>_thresholds.csv
+    if (!rows.length || !("ler" in rows[0]) || "theta" in rows[0]) return;
     if ("qubits" in rows[0]) { foot[f] = rows; return; }
     // shared/memory.py writes one file per distance and no scheme column
     const run = f.replace(/_d\d+\.csv$/, "").replace(/\.csv$/, "");

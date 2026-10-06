@@ -31,10 +31,11 @@ from a coarse scan first.
 
 Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.csv with
 every simulated point, one row per (direction, basis, distance, p) appended as soon as it is done, and
-<name>.png, and <name>.json, the thresholds found (what the viewer behind `make serve` reads; derived, like the
-PNG). Each scan reads its points from the CSV before simulating any, so rerunning the same command after a crash
+<name>.png, and <name>_thresholds.csv, one row per direction with its threshold (what the viewer behind
+`make serve` reads; derived, like the PNG). Each scan reads its points from the CSV before simulating any, so rerunning the same command after a crash
 only runs the points still missing, and a rerun with other settings (more NBIAS, say) reuses every point they
-share; --plot-only replays the scans from the CSV alone, or draws an older run's <name>.json if it has no CSV.
+share; --plot-only replays the scans from the CSV alone, or draws <name>_thresholds.csv if it has no CSV.
+--sources warns if that code changed since <name>.csv was written.
 """
 # Parts of this file are adapted from IBM's QEC-with-spin-qubits, (C) Copyright IBM 2023, licensed under the
 # Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0): LogFail_of_d_p,
@@ -42,7 +43,7 @@ share; --plot-only replays the scans from the CSV alone, or draws an older run's
 # bias lists of generate_Gbias_plot.py / generate_Tbias_plot.py, and Arrow3D and the bias figure of
 # Threshold_surfaces_demo.ipynb. Modified: rewritten for this repo's circuits, noise and decoder.
 import argparse
-import json
+import csv
 import os
 from multiprocessing import Lock
 from functools import lru_cache
@@ -59,11 +60,15 @@ from tqdm import tqdm
 
 from physical_to_logical import SCHEMES
 from floquet import CODES, memory_circuit
-from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher
+from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher, warn_stale
 from noise import add_noise, spin_qubit_noise_model
 
 ROOT = Path(__file__).resolve().parents[2]
-
+# <name>_thresholds.csv: one row per direction; group is axis (the three axis thresholds aiming the grid, in
+# the order G, T, R), surface, g_bias or t_bias
+SUMMARY_FIELDS = ("group", "theta", "phi", "eta_g", "eta_t", "p_th", "p_th_error", "p_th_Z", "p_th_X", "scheme",
+                  "code", "decoder", "distances")
+AXES = ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))  # (theta, phi) of pure gate, idling and readout noise
 # One simulated point: what it is (POINT) and its result (shots, errors). A worker's view of <out>.csv, set by `_init`.
 POINT = ("scheme", "code", "decoder", "basis", "distance", "p", "theta", "phi", "eta_g", "eta_t", "shots_max", "batch",
          "max_fail")
@@ -109,11 +114,12 @@ def main() -> None:
     parser.add_argument("--max-fail-rate", type=float, default=0.45, help="stop raising p past this LER")
     parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--out", type=Path, help="writes <out>.csv (every point), <out>.json and <out>.png")
+    parser.add_argument("--out", type=Path, help="writes <out>.csv (every point), <out>_thresholds.csv and <out>.png")
     parser.add_argument("--plot-only", action="store_true",
-                        help="redraw <out>.png from <out>.csv, simulating nothing (or from an older run's <out>.json)")
+                        help="redraw <out>.png from <out>.csv, simulating nothing (or from <out>_thresholds.csv)")
     parser.add_argument("--bias-only", action="store_true",
-                        help="run only (c) and replace it in <out>.json, keeping its surface and axes")
+                        help="run only (c) and replace it in <out>_thresholds.csv, keeping its surface and axes")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
     if args.out is None:
@@ -121,8 +127,9 @@ def main() -> None:
                   else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
         args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
-    csv_path, summary = args.out.with_suffix(".csv"), args.out.with_suffix(".json")
-    saved = json.loads(summary.read_text()) if summary.exists() else None
+    # not with_suffix: a name like ..._etaG0.5_... has a dot of its own
+    csv_path, summary, png = (args.out.parent / (args.out.name + end) for end in (".csv", "_thresholds.csv", ".png"))
+    saved = _data_from_summary(read_rows(summary)) if summary.exists() else None
     if args.plot_only and saved and not csv_path.exists():
         data = saved  # a run from before the CSV: nothing to replay
     elif args.plot_only:
@@ -139,6 +146,7 @@ def main() -> None:
             data = saved
     else:
         csv_path.parent.mkdir(parents=True, exist_ok=True)
+        warn_stale(csv_path, args.sources)
         old = saved if args.bias_only else None
         if old:  # aim (c) at the axis thresholds the saved run found, so no coarse scan
             args.pg, args.pt, args.pr = (a if a is not None else b for a, b in zip((args.pg, args.pt, args.pr),
@@ -148,12 +156,12 @@ def main() -> None:
         if args.bias_only:  # keep the saved surface, replace (c)
             new = data
             data = old or dict(new, surface=[])
-            data.update(g_bias=new["g_bias"], t_bias=new["t_bias"], bias_settings=new["settings"])
-        summary.write_text(json.dumps(data))
+            data.update(g_bias=new["g_bias"], t_bias=new["t_bias"])
+        _write_summary(data, summary)
     for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
         print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
-    _plot(data, args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.csv, {args.out}.json, {args.out}.png")
+    _plot(data, png)
+    print(f"wrote {csv_path}, {summary}, {png}")
 
 
 def _noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
@@ -252,7 +260,7 @@ def _combine(lf_z: list, lf_x: list) -> dict:
     """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's."""
     (z, z_err), (x, x_err) = _threshold_from_log_fail(lf_z), _threshold_from_log_fail(lf_x)
     p_th, err = min(((t, e) for t, e in ((z, z_err), (x, x_err)) if t > 0), default=(0.0, 0.0))
-    return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x, log_fail={"Z": lf_z, "X": lf_x})
+    return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x)
 
 
 def _indexed(item: tuple) -> tuple:
@@ -291,7 +299,7 @@ def _run(args, pool: Pool, bias_only: bool = False) -> dict:
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
         coarse = list(np.geomspace(1e-3, 0.3, 16))
-        tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in ((0, 0), (0, np.pi / 2), (np.pi / 2, 0))]
+        tasks = [dict(base, **eta, theta=t, phi=f, errors=coarse) for t, f in AXES]
         print("coarse scan along the three axes", flush=True)
         found = [r["p_th"] for r in _run_both(pool, tasks)]
         axes = [a if a is not None else (f or 0.05) for a, f in zip(axes, found)]
@@ -323,6 +331,31 @@ def _run(args, pool: Pool, bias_only: bool = False) -> dict:
             data[key].append(dict(theta=task["theta"], phi=task["phi"], eta_g=task["eta_g"], eta_t=task["eta_t"],
                                   **result))
     return data
+
+
+def _write_summary(data: dict, path: Path) -> None:
+    """`_run`'s data as <name>_thresholds.csv: the three axis thresholds, then a row per direction of each group."""
+    s = data["settings"]
+    common = dict(scheme=s["scheme"], code=s["code"], decoder=s["decoder"],
+                  distances=" ".join(map(str, s["distances"])))
+    rows = [dict(common, group="axis", theta=t, phi=f, eta_g=s["eta_g"], eta_t=s["eta_t"], p_th=a)
+            for (t, f), a in zip(AXES, data["axes"])]
+    rows += [dict(common, group=g, **r) for g in ("surface", "g_bias", "t_bias") for r in data.get(g, [])]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _data_from_summary(rows: list[dict]) -> dict:
+    """The rows of <name>_thresholds.csv back as `_run`'s data."""
+    axis = [r for r in rows if r["group"] == "axis"]
+    first = axis[0]
+    settings = dict(scheme=first["scheme"], code=first["code"], decoder=first["decoder"],
+                    distances=[int(d) for d in str(first["distances"]).split()], eta_g=first["eta_g"],
+                    eta_t=first["eta_t"])
+    return dict(settings=settings, axes=[r["p_th"] for r in axis],
+                **{g: [r for r in rows if r["group"] == g] for g in ("surface", "g_bias", "t_bias")})
 
 
 def _plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> None:

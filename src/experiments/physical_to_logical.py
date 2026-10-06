@@ -9,7 +9,7 @@ floquet.memory_circuit, so they share every detector and the observable, and onl
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
 a graph, matched by PyMatching (docs/decoding.pdf). One CSV row per (scheme, distance, p), appended as each
 finishes (memory.run_points), so rerunning the same command after a crash only runs the points still missing;
-then a plot.
+then a plot. --sources warns if that code changed since <out>.csv was written.
 """
 import argparse
 import os
@@ -89,6 +89,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/physical_to_logical"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
 
     if args.plot_only:
@@ -100,7 +101,7 @@ def main() -> None:
 
     tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
              for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
-    rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers)
+    rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
     _plot(rows, args.out.with_suffix(".png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 

@@ -158,9 +158,13 @@ $(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/shared/floquet.py src/shared
 plots: $(RUN)_ler.png
 
 # One CSV per distance, d rounds each.
-$(RUN)_d%.csv: $(TWO_SRC)
+# Always run: memory.py appends each p as it finishes and skips those already in the CSV, so a cut-short run picks
+# up where it stopped (it warns if TWO_SRC changed since; delete the CSV to start over). Precious: kept on Ctrl-C.
+$(RUN)_d%.csv: FORCE
 	$(PY) src/shared/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
-		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@
+		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@ --sources $(TWO_SRC)
+.PRECIOUS: $(RUN)_d%.csv
+FORCE:
 
 $(RUN)_ler.png: $(CSVS) src/shared/drawing.py src/two_ancillas/plots.py
 	$(PY) src/two_ancillas/plots.py ler $(CSVS) --png $@
@@ -175,21 +179,22 @@ decode: $(DECODE).png
 
 $(DECODE).png: src/single_ancilla/decode.py $(ONE_SRC)
 	$(PY) src/single_ancilla/decode.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(DECODE)
+		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(DECODE) --sources $(ONE_SRC)
 
 # LER vs physical qubits at P for each of SCHEMES, and the qubits each needs for LER TARGET.
 footprint: $(FOOTPRINT).png
 
 $(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $(ONE_SRC)
 	$(PY) src/single_ancilla/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT)
+		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT) --sources $(ONE_SRC)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
 # Phony: the script names the files from its settings.
 thresholds:
 	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
-		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only)
+		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only) \
+		--sources $(ONE_SRC)
 
 # thresholds for every scheme in SCHEMES, one after the other; stops at the first that fails.
 thresholds-all:
