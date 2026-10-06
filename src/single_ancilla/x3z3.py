@@ -37,19 +37,6 @@ from x3z3_plots import plot
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@lru_cache(maxsize=None)
-def circuit(code: str, scheme: str, distance: int, basis: str):
-    """The noiseless memory circuit, d rounds: once per worker."""
-    return memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
-
-
-def point(task: dict) -> dict:
-    c = circuit(task["code"], task["scheme"], task["distance"], task["basis"])
-    errors, shots = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])),
-                                   task["shots_max"], task["max_errors"])
-    return dict(task, qubits=c.num_qubits, shots=shots, errors=errors)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--codes", nargs="+", choices=CODES, default=list(CODES))
@@ -80,9 +67,22 @@ def main() -> None:
                  for c in args.codes for s in args.schemes for d in args.distances for eta in args.etas
                  for p in ps for b in "ZX"]
         # slowest first (largest distance, then highest p), so the last workers aren't left with one big job
-        run_points(csv_path, sorted(tasks, key=lambda t: (-t["distance"], -t["p"])), point, args.workers)
+        run_points(csv_path, sorted(tasks, key=lambda t: (-t["distance"], -t["p"])), _point, args.workers)
     for png in plot(csv_path, args.out, args.p_fixed):
         print(f"wrote {png}")
+
+
+@lru_cache(maxsize=None)
+def _circuit(code: str, scheme: str, distance: int, basis: str):
+    """The noiseless memory circuit, d rounds: once per worker."""
+    return memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
+
+
+def _point(task: dict) -> dict:
+    c = _circuit(task["code"], task["scheme"], task["distance"], task["basis"])
+    errors, shots = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])),
+                                   task["shots_max"], task["max_errors"])
+    return dict(task, qubits=c.num_qubits, shots=shots, errors=errors)
 
 
 if __name__ == "__main__":

@@ -12,21 +12,6 @@ from floquet import (HEX_CORNERS, QUBIT_CORNERS, check_paulis, check_scheme, col
 from layout import edge_list, positions, qubit_kinds, style_ticks
 
 
-def ring_swaps(distance: int, colour: int) -> list[tuple[complex, complex]]:
-    """(data, ancilla) around every hex of `colour`: each corner with the ancilla before it clockwise (as
-    drawn, y down), so SWAPping every pair rotates the data one step counterclockwise around their hex, and
-    the same SWAPs again rotate them back clockwise."""
-    ancillas = {a for *_, a in edge_list(distance)}
-    pairs = []
-    for h, c in hex_centers(distance).items():
-        if c == colour:
-            for i, corner in enumerate(QUBIT_CORNERS):
-                anc = torus(h + (QUBIT_CORNERS[i - 1] + corner) / 2, distance)  # mid of the edge before it
-                assert anc in ancillas
-                pairs.append((torus(h + corner, distance), anc))
-    return pairs
-
-
 def syndrome_checks(distance: int, colour: int) -> list[tuple[int, complex, complex, complex]]:
     """(k, u, v, a) for every other edge u-v around each hex of `colour`: right to bottom-right, bottom-left to
     left, top-left to top-right; in `edge_list` order of the checked edge u-v, the order floquet.memory_circuit
@@ -57,6 +42,7 @@ def corner_check(pauli: str, d0: int, d1: int, syndrome: int, reference: int) ->
     reset, first, second, turn = collect(pauli, d0, d1, syndrome)
     return [[reset, ("R", [reference])], [first], [second], *turn, [("MZZ", [syndrome, reference])]]
 
+
 def rotated(r: int) -> int:
     """The hexes step r rotates. Rotating the colour c hexes checks the colour c - 1 edges, so the colour
     `step_colour(r)` edges step r measures (rX gZ bX rZ gX bZ, as in floquet.py) come from rotating colour
@@ -67,7 +53,7 @@ def rotated(r: int) -> int:
 def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css") -> stim.Circuit:
     """Step r, a TICK after every layer:
     1. SWAP the data qubits and ancillas around every `rotated(r)` hex, rotating the data counterclockwise
-       (see `ring_swaps`), then an empty TICK so diagrams show where everything is.
+       (see `_ring_swaps`), then an empty TICK so diagrams show where everything is.
     2. On every other corner of those hexes, the syndrome measures the XX (even r) or ZZ (odd r) parity of
        the two data next to it, which together are every colour step_colour(r) edge, read out against the ancilla of
        the corner's `rotated(r)` edge (see `syndrome_checks`, `corner_check`); in the `code` "x3z3"
@@ -76,31 +62,12 @@ def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "cs
     3. The same SWAPs again, rotating everything back clockwise."""
     pos = positions(distance, hex_view)
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
-    pairs = ring_swaps(distance, rotated(r))
+    pairs = _ring_swaps(distance, rotated(r))
     swaps = [[("SWAP", [q2i[q] for pair in pairs for q in pair])]]
     moved = dict(pairs)  # data qubit's corner -> the ancilla spot its state is on after the swaps
     checks = [corner_check(check_paulis("XZ"[r % 2], (u, v), code), q2i[moved[u]], q2i[moved[v]], q2i[u], q2i[a])
               for _, u, v, a in syndrome_checks(distance, rotated(r))]
     return step_circuit({i: pos[q] for q, i in q2i.items()}, checks, before=swaps, after=swaps)
-
-def roles(distance: int, r: int, swapped: bool) -> tuple[list[str], list[str]]:
-    """(kinds, labels) by stim index, before step r's swaps or after them. Before: D<i> data qubit i on its
-    corner, A<k> the ancilla of edge k (as in the numbered layout). After: data and ancillas traded places
-    with their labels, then each check's syndrome S<k> (`main`) on its corner, and the ancilla A<k> of edge k
-    drawn as its reference (`reff`), as `round_circuit` uses them (see `syndrome_checks`)."""
-    kinds = qubit_kinds(distance)
-    q2i = {q: i for i, q in enumerate(kinds)}
-    n_data = len(qubits(distance))
-    kind = list(kinds.values())
-    label = [f"D{i}" if k == "data" else f"A{i - n_data}" for i, k in enumerate(kind)]
-    if swapped:
-        for d, a in ring_swaps(distance, rotated(r)):
-            i, j = q2i[d], q2i[a]
-            kind[i], kind[j], label[i], label[j] = kind[j], kind[i], label[j], label[i]
-        for k, u, _, a in syndrome_checks(distance, rotated(r)):
-            kind[q2i[u]], label[q2i[u]] = "main", f"S{k}"
-            kind[q2i[a]] = "reff"
-    return kind, label
 
 
 def check(distance: int) -> None:
@@ -110,7 +77,7 @@ def check(distance: int) -> None:
     detectors (floquet.check_scheme); and the diagram labels match the readouts."""
     colours = {frozenset((d0, d1)): c for c, d0, d1, _ in edge_list(distance)}
     for colour in range(3):
-        pairs = ring_swaps(distance, colour)
+        pairs = _ring_swaps(distance, colour)
         assert sorted_complex(d for d, _ in pairs) == qubits(distance), colour
         assert len({a for _, a in pairs}) == len(pairs), colour
         checks = syndrome_checks(distance, colour)
@@ -123,12 +90,13 @@ def check(distance: int) -> None:
         checks = syndrome_checks(distance, rotated(r))
         assert {colours[frozenset((u, v))] for _, u, v, _ in checks} == {step_colour(r)}, r  # the schedule's colour
         # the diagram labels agree with the circuit: MZZ reads S<k>, A<k> of edge k; every data qubit once
-        _, label = roles(distance, r, True)
+        _, label = _roles(distance, r, True)
         mzz = [t.value for inst in round_circuit(distance, r) if inst.name == "MZZ" for t in inst.targets_copy()]
         assert [label[i] for i in mzz] == [f"{x}{k}" for k, *_ in checks for x in "SA"], r
         assert sorted(lab for lab in label if lab[0] == "D") == sorted(f"D{i}" for i in range(n_data)), r
     check_scheme(distance, round_circuit, lambda r: [(u, v) for _, u, v, _ in syndrome_checks(distance, rotated(r))],
                  q2i)
+
 
 def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) -> plt.Figure:
     """Plaquettes in their colour, data qubits on the corners, one ancilla on every edge; `numbers` labels
@@ -171,22 +139,16 @@ def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) 
     return fig
 
 
-def layout_png(distance: int, hex_view: bool, numbers: bool, png: Path) -> None:
-    fig = layout_figure(distance, hex_view, numbers)
-    fig.savefig(png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
 def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, sensors: bool = True,
               code: str = "css") -> str:
     """Timeslice view of step r, plaquettes coloured underneath; brick-wall or regular hexagons. Tick 0 is the
-    swaps; from tick 1 up to the swaps back, qubits are drawn in their roles after the swaps (see `roles`),
+    swaps; from tick 1 up to the swaps back, qubits are drawn in their roles after the swaps (see `_roles`),
     labelled with `numbers`, and with `sensors` a square for each readout's charge sensor."""
     circuit = round_circuit(distance, r, hex_view, code)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
-    ticks = [roles(distance, r, False)] + [roles(distance, r, True)] * (circuit.num_ticks - 1)
+    ticks = [_roles(distance, r, False)] + [_roles(distance, r, True)] * (circuit.num_ticks - 1)
     svg = style_ticks(svg, [k for k, _ in ticks], [lab for _, lab in ticks] if numbers else None)
     # Each check's sensor: on the far side of its corner u from the reference A<k>, inside the rotating hex.
     svg = local_pairs(svg, i2pos, period(distance))
@@ -209,10 +171,51 @@ def main() -> None:
     for hex_view in (False, True):
         for numbers in (False, True):
             folder = drawing_dir(out, hex_view, numbers)
-            layout_png(distance, hex_view, numbers, folder / "layout.png")
+            _layout_png(distance, hex_view, numbers, folder / "layout.png")
             for r in range(6):
                 svg_png(round_svg(distance, r, hex_view, numbers, sensors), folder / f"round{r}.png")
     print(f"wrote {out}/")
+
+
+def _ring_swaps(distance: int, colour: int) -> list[tuple[complex, complex]]:
+    """(data, ancilla) around every hex of `colour`: each corner with the ancilla before it clockwise (as
+    drawn, y down), so SWAPping every pair rotates the data one step counterclockwise around their hex, and
+    the same SWAPs again rotate them back clockwise."""
+    ancillas = {a for *_, a in edge_list(distance)}
+    pairs = []
+    for h, c in hex_centers(distance).items():
+        if c == colour:
+            for i, corner in enumerate(QUBIT_CORNERS):
+                anc = torus(h + (QUBIT_CORNERS[i - 1] + corner) / 2, distance)  # mid of the edge before it
+                assert anc in ancillas
+                pairs.append((torus(h + corner, distance), anc))
+    return pairs
+
+
+def _roles(distance: int, r: int, swapped: bool) -> tuple[list[str], list[str]]:
+    """(kinds, labels) by stim index, before step r's swaps or after them. Before: D<i> data qubit i on its
+    corner, A<k> the ancilla of edge k (as in the numbered layout). After: data and ancillas traded places
+    with their labels, then each check's syndrome S<k> (`main`) on its corner, and the ancilla A<k> of edge k
+    drawn as its reference (`reff`), as `round_circuit` uses them (see `syndrome_checks`)."""
+    kinds = qubit_kinds(distance)
+    q2i = {q: i for i, q in enumerate(kinds)}
+    n_data = len(qubits(distance))
+    kind = list(kinds.values())
+    label = [f"D{i}" if k == "data" else f"A{i - n_data}" for i, k in enumerate(kind)]
+    if swapped:
+        for d, a in _ring_swaps(distance, rotated(r)):
+            i, j = q2i[d], q2i[a]
+            kind[i], kind[j], label[i], label[j] = kind[j], kind[i], label[j], label[i]
+        for k, u, _, a in syndrome_checks(distance, rotated(r)):
+            kind[q2i[u]], label[q2i[u]] = "main", f"S{k}"
+            kind[q2i[a]] = "reff"
+    return kind, label
+
+
+def _layout_png(distance: int, hex_view: bool, numbers: bool, png: Path) -> None:
+    fig = layout_figure(distance, hex_view, numbers)
+    fig.savefig(png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

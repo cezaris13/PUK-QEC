@@ -76,20 +76,49 @@ def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str
     return out
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
+    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
+    parser.add_argument("--eta", type=float, default=10.0)
+    parser.add_argument("--p-min", type=float, default=1e-4)
+    parser.add_argument("--p-max", type=float, default=1e-2)
+    parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
+    parser.add_argument("--shots", type=int, default=10_000)
+    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
+    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    args = parser.parse_args()
+
+    if args.plot_only:
+        _plot(read_rows(args.out.with_suffix(".csv")), args.out.with_suffix(".png"))
+        return
+
+    for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
+        print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
+
+    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
+             for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
+    rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers)
+    _plot(rows, args.out.with_suffix(".png"))
+    print(f"wrote {args.out}.csv, {args.out}.png")
+
+
 @lru_cache(maxsize=None)
-def circuit(scheme: str, distance: int) -> "stim.Circuit":
+def _circuit(scheme: str, distance: int) -> "stim.Circuit":
     """The noiseless memory circuit, d rounds: once per worker."""
     return floquet.memory_circuit(distance, distance, SCHEMES[scheme])
 
 
-def point(task: dict) -> dict:
+def _point(task: dict) -> dict:
     """One (scheme, distance, p) point of the sweep: its logical errors in up to shots_max shots."""
-    noisy = add_noise(circuit(task["scheme"], task["distance"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
+    noisy = add_noise(_circuit(task["scheme"], task["distance"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
     errors, ran = logical_errors(noisy, task["shots_max"])
     return dict(task, shots=ran, errors=errors, ler=errors / ran)
 
 
-def plot(rows: list[dict], png: Path) -> None:
+def _plot(rows: list[dict], png: Path) -> None:
     """LER vs p: colour = distance, line style = scheme. Zero-error points are left out (log axis)."""
     fig, ax = plt.subplots(figsize=(6, 4.5))
     distances = sorted({r["distance"] for r in rows})
@@ -108,34 +137,6 @@ def plot(rows: list[dict], png: Path) -> None:
     fig.savefig(png, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
-    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
-    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
-    parser.add_argument("--eta", type=float, default=10.0)
-    parser.add_argument("--p-min", type=float, default=1e-4)
-    parser.add_argument("--p-max", type=float, default=1e-2)
-    parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
-    parser.add_argument("--shots", type=int, default=10_000)
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
-    parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
-    args = parser.parse_args()
-
-    if args.plot_only:
-        plot(read_rows(args.out.with_suffix(".csv")), args.out.with_suffix(".png"))
-        return
-
-    for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
-        print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
-
-    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
-             for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
-    rows = run_points(args.out.with_suffix(".csv"), tasks, point, args.workers)
-    plot(rows, args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.csv, {args.out}.png")
 
 if __name__ == "__main__":
     main()

@@ -25,6 +25,7 @@ def layers(pauli: str, u: int, v: int, a: int, s: int, *_) -> tuple[corner_reado
     reset, first, second, turn = collect(pauli, u, v, a)
     return [[reset, ("R", [s])], [first], [second], *turn, [("SWAP", [s, u])], [("MZZ", [a, u])], [("SWAP", [s, u])]], a, s
 
+
 def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css"):
     """Step r for floquet.memory_circuit, as corner_readout.round_circuit builds it with these gates."""
     return corner_readout.round_circuit(distance, r, layers, hex_view, code)

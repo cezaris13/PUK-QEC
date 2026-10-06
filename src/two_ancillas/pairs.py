@@ -8,24 +8,12 @@ from floquet import (Edge, check_paulis, check_scheme, collect, edge_list, hex_p
                      step_circuit, step_colour, torus)
 
 
-def thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
-    """The two points splitting a -> b into thirds: where an edge's ancillas sit."""
-    return torus(a + (b - a) / 3, distance), torus(a + (b - a) * 2 / 3, distance)
-
-
-def edge_ancillas(distance: int) -> list[tuple[Edge, complex, complex]]:
-    """(edge, main, reff) for every edge in `edge_list` order: the two spin ancillas between its data qubits,
-    read out together by spin blockade (as in SpinQEC). main does the calculation (holds the syndrome) and sits
-    next to data[0]; reff, its readout reference held in a known state, sits next to data[1]."""
-    return [(e, *thirds(*e.ends, distance)) for e in edge_list(distance)]
-
-
 def positions(distance: int) -> dict[complex, complex]:
     """Qubit -> where it is drawn on regular hexagons: the data as `hex_positions`, the ancillas still a third
     of the way along their edge."""
     pos = hex_positions(distance)
     for e in edge_list(distance):
-        pos.update(zip(thirds(*e.ends, distance), thirds(*e.hex_ends, distance)))
+        pos.update(zip(_thirds(*e.ends, distance), _thirds(*e.hex_ends, distance)))
     return pos
 
 
@@ -33,7 +21,7 @@ def qubit_kinds(distance: int) -> dict[complex, str]:
     """Every qubit -> "data", "main" or "reff", in index order: a qubit's index in every circuit is its
     position here. Data qubits first (as in `qubits`), then each edge's main and reff."""
     kinds = {q: "data" for q in qubits(distance)}
-    for _, main, reff in edge_ancillas(distance):
+    for _, main, reff in _edge_ancillas(distance):
         kinds[main] = "main"
         kinds[reff] = "reff"
     return kinds
@@ -51,7 +39,7 @@ def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "cs
     pos = positions(distance) if hex_view else {q: q for q in q2i}
     checks = [parity_check(check_paulis("XZ"[r % 2], e.data, code), q2i[e.data[0]], q2i[e.data[1]], q2i[main],
                            q2i[reff])
-              for e, main, reff in edge_ancillas(distance) if e.colour == step_colour(r)]
+              for e, main, reff in _edge_ancillas(distance) if e.colour == step_colour(r)]
     return step_circuit({i: pos[q] for q, i in q2i.items()}, checks)
 
 
@@ -75,7 +63,19 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[lis
     return [[reset, ("R", [reff])], [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
 
 
-def check(distance: int) -> None:
+def _thirds(a: complex, b: complex, distance: int) -> tuple[complex, complex]:
+    """The two points splitting a -> b into thirds: where an edge's ancillas sit."""
+    return torus(a + (b - a) / 3, distance), torus(a + (b - a) * 2 / 3, distance)
+
+
+def _edge_ancillas(distance: int) -> list[tuple[Edge, complex, complex]]:
+    """(edge, main, reff) for every edge in `edge_list` order: the two spin ancillas between its data qubits,
+    read out together by spin blockade (as in SpinQEC). main does the calculation (holds the syndrome) and sits
+    next to data[0]; reff, its readout reference held in a known state, sits next to data[1]."""
+    return [(e, *_thirds(*e.ends, distance)) for e in edge_list(distance)]
+
+
+def _check(distance: int) -> None:
     """floquet.check_scheme for the pairs: record j of step r is the parity of the j-th edge of its colour."""
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     check_scheme(distance, round_circuit, lambda r: [e.data for e in edge_list(distance) if e.colour == step_colour(r)],

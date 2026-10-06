@@ -30,22 +30,52 @@ from memory import logical_errors, read_rows, run_points
 from noise import NOISE_MODELS, add_noise
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
+    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5, 7])
+    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
+    parser.add_argument("--eta", type=float, default=10.0)
+    parser.add_argument("--p", type=float, default=1e-3)
+    parser.add_argument("--shots", type=int, default=10_000_000, help="most shots per point")
+    parser.add_argument("--max-errors", type=int, default=100, help="stop a point at this many logical errors")
+    parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
+    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
+    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    args = parser.parse_args()
+
+    if args.plot_only:
+        rows = read_rows(args.out.with_suffix(".csv"))
+        args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
+    else:
+        tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
+                      shots_max=args.shots, max_errors=args.max_errors) for name in args.schemes for d in args.distances]
+        rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers)
+    for name in args.schemes:
+        fit = _qubits_needed([r for r in rows if r["scheme"] == name], args.target)
+        print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
+                                "not enough distances with errors to fit (more shots or larger p)"))
+    _plot(rows, args.target, args.out.with_suffix(".png"))
+    print(f"wrote {args.out}.csv, {args.out}.png")
+
+
 @lru_cache(maxsize=None)
-def circuit(scheme: str, distance: int):
+def _circuit(scheme: str, distance: int):
     """The noiseless memory circuit, d rounds: once per worker."""
     return memory_circuit(distance, distance, SCHEMES[scheme])
 
 
-def point(task: dict) -> dict:
+def _point(task: dict) -> dict:
     """One (scheme, distance) point: its qubit count and LER at p, from up to shots_max shots, stopping at
     max_errors logical errors."""
-    c = circuit(task["scheme"], task["distance"])
+    c = _circuit(task["scheme"], task["distance"])
     errors, ran = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])), task["shots_max"],
                                  task["max_errors"])
     return dict(task, qubits=c.num_qubits, shots=ran, errors=errors, ler=errors / ran)
 
 
-def qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
+def _qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
     """(slope, intercept, qubits) of the fit log(LER) = intercept + slope * d for one scheme's rows, with the
     qubit count where it crosses `target`; None without two distances that saw errors, or if the LER doesn't
     fall with d (p above threshold)."""
@@ -60,7 +90,7 @@ def qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float]
     return slope, intercept, per_d2 * d ** 2
 
 
-def plot(rows: list[dict], target: float, png: Path) -> None:
+def _plot(rows: list[dict], target: float, png: Path) -> None:
     """LER vs qubits on square-root-log axes, where each scheme's fit is a straight line: points coloured by
     distance with 95% Clopper-Pearson bars, marker = scheme, grey fit in the scheme's line style out to the
     target (star), labelled with the qubits needed and Lambda = LER(d) / LER(d + 2)."""
@@ -76,7 +106,7 @@ def plot(rows: list[dict], target: float, png: Path) -> None:
                 lo, hi = clopper_pearson(r["errors"], r["shots"])
                 ax.errorbar(r["qubits"], r["ler"], yerr=[[r["ler"] - lo], [hi - r["ler"]]], marker=marker,
                             color=DISTANCE_COLOUR[r["distance"]], ms=6, lw=1, capsize=2, ls="none")
-        fit = qubits_needed(mine, target)
+        fit = _qubits_needed(mine, target)
         if fit:
             slope, intercept, needed = fit
             per_d2 = mine[0]["qubits"] / mine[0]["distance"] ** 2
@@ -99,36 +129,6 @@ def plot(rows: list[dict], target: float, png: Path) -> None:
     ax.add_artist(second)
     fig.savefig(png, dpi=200)
     plt.close(fig)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5, 7])
-    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
-    parser.add_argument("--eta", type=float, default=10.0)
-    parser.add_argument("--p", type=float, default=1e-3)
-    parser.add_argument("--shots", type=int, default=10_000_000, help="most shots per point")
-    parser.add_argument("--max-errors", type=int, default=100, help="stop a point at this many logical errors")
-    parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
-    parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
-    args = parser.parse_args()
-
-    if args.plot_only:
-        rows = read_rows(args.out.with_suffix(".csv"))
-        args.schemes = list(dict.fromkeys(r["scheme"] for r in rows))
-    else:
-        tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
-                      shots_max=args.shots, max_errors=args.max_errors) for name in args.schemes for d in args.distances]
-        rows = run_points(args.out.with_suffix(".csv"), tasks, point, args.workers)
-    for name in args.schemes:
-        fit = qubits_needed([r for r in rows if r["scheme"] == name], args.target)
-        print(f"{name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
-                                "not enough distances with errors to fit (more shots or larger p)"))
-    plot(rows, args.target, args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.csv, {args.out}.png")
 
 
 if __name__ == "__main__":

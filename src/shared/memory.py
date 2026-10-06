@@ -120,19 +120,6 @@ def sweep(distance: int, rounds: int, noise: str, eta: float, ps: list[float], s
     return rows
 
 
-@lru_cache(maxsize=None)
-def _pairs_circuit(distance: int, rounds: int) -> stim.Circuit:
-    from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
-    return memory_circuit(distance, rounds, round_circuit)
-
-
-def pairs_point(task: dict) -> dict:
-    """`main`'s point: the pairs memory experiment at the task's (distance, rounds, noise, eta, p)."""
-    noisy = add_noise(_pairs_circuit(task["distance"], task["rounds"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
-    errors, ran = logical_errors(noisy, task["shots_max"])
-    return dict(task, shots=ran, errors=errors, ler=errors / ran)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--distance", type=int, default=3)
@@ -148,8 +135,21 @@ def main() -> None:
 
     tasks = [dict(distance=args.distance, rounds=args.rounds, noise=args.noise, eta=args.eta, p=float(p),
                   shots_max=args.shots) for p in np.geomspace(args.p_min, args.p_max, args.num)]
-    run_points(args.csv, tasks, pairs_point, desc=f"d={args.distance}")
+    run_points(args.csv, tasks, _pairs_point, desc=f"d={args.distance}")
     print(f"wrote {args.csv}")
+
+
+@lru_cache(maxsize=None)
+def _pairs_circuit(distance: int, rounds: int) -> stim.Circuit:
+    from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
+    return memory_circuit(distance, rounds, round_circuit)
+
+
+def _pairs_point(task: dict) -> dict:
+    """`main`'s point: the pairs memory experiment at the task's (distance, rounds, noise, eta, p)."""
+    noisy = add_noise(_pairs_circuit(task["distance"], task["rounds"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
+    errors, ran = logical_errors(noisy, task["shots_max"])
+    return dict(task, shots=ran, errors=errors, ler=errors / ran)
 
 
 if __name__ == "__main__":
