@@ -141,7 +141,7 @@ def main() -> None:
 
 @lru_cache(maxsize=None)
 def _pairs_circuit(distance: int, rounds: int) -> stim.Circuit:
-    from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
+    from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; physical_to_logical.py runs every scheme
     return memory_circuit(distance, rounds, round_circuit)
 
 

@@ -2,9 +2,9 @@
 QEC-with-spin-qubits (https://github.com/IBM/QEC-with-spin-qubits, Hetenyi & Wootton, "Tailoring quantum error
 correction to spin qubits", arXiv:2306.17786): their figures (b) and (c), for these circuits.
 
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --distances 3 5 --nphi 6
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --plot-only   # redraw from the JSON
-    .venv/bin/python src/single_ancilla/thresholds.py --scheme method_b --code x3z3   # the X3Z3 Floquet code
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --distances 3 5 --nphi 6
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --plot-only   # redraw from the JSON
+    .venv/bin/python src/experiments/thresholds.py --scheme method_b --code x3z3   # the X3Z3 Floquet code
 
 Noise (noise.spin_qubit_noise_model) has three independent sources, gates p_G, idling p_T and readout p_R. A
 direction (theta, phi) and a size p set them, as in IBM's plot_utils.LogFail_of_d_p:
@@ -57,7 +57,7 @@ from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata
 from tqdm import tqdm
 
-from decode import SCHEMES
+from physical_to_logical import SCHEMES
 from floquet import CODES, memory_circuit
 from memory import append_row, logical_errors, point_key, read_rows, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model

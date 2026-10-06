@@ -1,4 +1,4 @@
-// Loading and reading the result files under results/: LER CSVs (decode.py, shared/memory.py),
+// Loading and reading the result files under results/: LER CSVs (physical_to_logical.py, shared/memory.py),
 // footprint CSVs (footprint.py) and threshold JSONs (thresholds.py).
 
 export const PCT = 100;

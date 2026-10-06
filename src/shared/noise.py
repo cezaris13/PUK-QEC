@@ -60,7 +60,7 @@ def spin_qubit_noise_model(p_g1: float, p_g2: float, p_t1: float, p_t2: float, p
         idling, once per step      relaxation p_t1 (split over X and Y), dephasing p_t2 (Z)
 
     The idling hits every qubit left idle while a step's ancillas are read out, as IBM's idles every data
-    qubit after each edge measurement. src/single_ancilla/thresholds.py sets these from (p, theta, phi,
+    qubit after each edge measurement. src/experiments/thresholds.py sets these from (p, theta, phi,
     eta_G, eta_T)."""
     two_qubit = NoiseTerm(gate_noise_name="DEPOLARIZE2", gate_noise_probs=[p_g2])
     return NoiseModel(
