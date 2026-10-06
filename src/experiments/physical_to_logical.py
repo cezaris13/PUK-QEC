@@ -1,35 +1,31 @@
 """Memory experiment for every readout scheme, decoded the same way: logical error rate vs p.
 
-    .venv/bin/python src/single_ancilla/decode.py --distances 3 5 --noise spin --eta 10 --shots 10000
-    .venv/bin/python src/single_ancilla/decode.py --schemes method_a method_b method_c
+    .venv/bin/python src/experiments/physical_to_logical.py --distances 3 5 --noise spin --eta 10 --shots 10000
+    .venv/bin/python src/experiments/physical_to_logical.py --schemes method_a method_b method_c
 
 "pairs" is src/two_ancillas/pairs.py's syndrome + reference ancilla pair on every edge; the rest have one ancilla per
 edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (src/single_ancilla/<name>/). All run through
 floquet.memory_circuit, so they share every detector and the observable, and only their step circuits (and so
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
-a graph, matched by PyMatching (docs/decoding.pdf). Writes one CSV row per (scheme, distance, p) and a plot.
-Each row is appended to <out>.csv as it finishes, and a rerun with the same settings skips the points already
-there, so a cut-short run picks up where it stopped; --sources warns if that code changed since.
+a graph, matched by PyMatching (docs/decoding.pdf). One CSV row per (scheme, distance, p), appended as each
+finishes (memory.run_points), so rerunning the same command after a crash only runs the points still missing;
+then a plot. --sources warns if that code changed since <out>.csv was written.
 """
 import argparse
-import sys
+import os
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from scipy.stats import beta
-from tqdm import tqdm
 
-SRC = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(SRC / "shared"), str(SRC / "two_ancillas")]
 import floquet
 import pairs
-from memory import append_row, logical_errors, point_key, saved_rows, start_csv
+from memory import logical_errors, read_rows, run_points
 from noise import NOISE_MODELS, add_noise
 
-for name in ("method_a", "method_b", "method_c"):
-    sys.path.insert(0, str(Path(__file__).resolve().parent / name))
 import method_a
 import method_b
 import method_c
@@ -80,7 +76,50 @@ def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str
     return out
 
 
-def plot(rows: list[dict], png: Path) -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
+    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
+    parser.add_argument("--eta", type=float, default=10.0)
+    parser.add_argument("--p-min", type=float, default=1e-4)
+    parser.add_argument("--p-max", type=float, default=1e-2)
+    parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
+    parser.add_argument("--shots", type=int, default=10_000)
+    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/physical_to_logical"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
+    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
+    args = parser.parse_args()
+
+    if args.plot_only:
+        _plot(read_rows(args.out.with_suffix(".csv")), args.out.with_suffix(".png"))
+        return
+
+    for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
+        print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
+
+    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
+             for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
+    rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
+    _plot(rows, args.out.with_suffix(".png"))
+    print(f"wrote {args.out}.csv, {args.out}.png")
+
+
+@lru_cache(maxsize=None)
+def _circuit(scheme: str, distance: int) -> "stim.Circuit":
+    """The noiseless memory circuit, d rounds: once per worker."""
+    return floquet.memory_circuit(distance, distance, SCHEMES[scheme])
+
+
+def _point(task: dict) -> dict:
+    """One (scheme, distance, p) point of the sweep: its logical errors in up to shots_max shots."""
+    noisy = add_noise(_circuit(task["scheme"], task["distance"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
+    errors, ran = logical_errors(noisy, task["shots_max"])
+    return dict(task, shots=ran, errors=errors, ler=errors / ran)
+
+
+def _plot(rows: list[dict], png: Path) -> None:
     """LER vs p: colour = distance, line style = scheme. Zero-error points are left out (log axis)."""
     fig, ax = plt.subplots(figsize=(6, 4.5))
     distances = sorted({r["distance"] for r in rows})
@@ -98,47 +137,6 @@ def plot(rows: list[dict], png: Path) -> None:
     ax.legend(frameon=False, fontsize=8)
     fig.savefig(png, dpi=200, bbox_inches="tight")
     plt.close(fig)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
-    parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
-    parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
-    parser.add_argument("--eta", type=float, default=10.0)
-    parser.add_argument("--p-min", type=float, default=1e-4)
-    parser.add_argument("--p-max", type=float, default=1e-2)
-    parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
-    parser.add_argument("--shots", type=int, default=10_000)
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
-    parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
-    parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
-    args = parser.parse_args()
-
-    csv_path = args.out.with_suffix(".csv")
-    if args.plot_only:
-        plot(saved_rows(csv_path), args.out.with_suffix(".png"))
-        return
-
-    for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
-        print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
-
-    ps = list(np.geomspace(args.p_min, args.p_max, args.num))
-    fields = ("scheme", "distance", "rounds", "noise", "eta", "p", "shots_max", "shots", "errors", "ler")
-    key = ("scheme", "distance", "p")
-    start_csv(csv_path, fields, args.sources)
-    done = {point_key(r, key) for r in saved_rows(csv_path)}
-    points = [dict(scheme=name, distance=d, p=float(p)) for name in args.schemes for d in args.distances for p in ps]
-    todo = [pt for pt in points if point_key(pt, key) not in done]
-    for pt in tqdm(todo, total=len(points), initial=len(points) - len(todo)):
-        name, d, p = pt["scheme"], pt["distance"], pt["p"]
-        circuit = floquet.memory_circuit(d, d, SCHEMES[name])
-        errors, ran = logical_errors(add_noise(circuit, NOISE_MODELS[args.noise](p, args.eta)), args.shots)
-        append_row(csv_path, fields, dict(pt, rounds=d, noise=args.noise, eta=args.eta, shots_max=args.shots,
-                                          shots=ran, errors=errors, ler=errors / ran))
-    wanted = {point_key(pt, key) for pt in points}
-    plot([r for r in saved_rows(csv_path) if point_key(r, key) in wanted], args.out.with_suffix(".png"))
-    print(f"wrote {args.out}.csv, {args.out}.png")
 
 
 if __name__ == "__main__":

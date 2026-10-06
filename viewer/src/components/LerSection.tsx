@@ -43,7 +43,7 @@ export function LerSection({ ler }: { ler: Series[] }) {
         </div>
       </div>
       <Plot data={traces}
-        msg={!ler.length && <span>No LER CSVs yet — run <code>make decode</code> or <code>make plots</code>.</span>}
+        msg={!ler.length && <span>No LER CSVs yet — run <code>make physical-to-logical</code> or <code>make plots</code>.</span>}
         layout={{ ...baseLayout(), showlegend: false,
                   xaxis: axis("Physical error rate p", { type: "log" }),
                   yaxis: axis("Logical error rate (d rounds)", { type: "log" }) }} />

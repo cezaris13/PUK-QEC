@@ -1,65 +1,19 @@
 import argparse
 import csv
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, label_qubits, style_qubits, svg_png, window
 from floquet import HEX_CORNERS, QUBIT_CORNERS, hex_centers, memory_circuit, period
 from pairs import positions, qubit_kinds, round_circuit
 
 
-def timeslices_png(distance: int, rounds: int, png: Path) -> None:
-    svg_png(str(memory_circuit(distance, rounds, round_circuit).diagram("timeslice-svg")), png)
-
-
-def qubit_labels(distance: int) -> dict[complex, str]:
-    """Qubit -> its label: "D<i>" for data qubit i, "S<k>" and "R<k>" for the syndrome and reference
-    ancillas of edge k (its place in `edge_list`). Stim indices: D<i> is i, S<k> is N + 2k and R<k> is
-    N + 2k + 1, with N the number of data qubits."""
-    kinds = qubit_kinds(distance)
-    n_data = list(kinds.values()).count("data")
-    return {q: {"data": "D", "main": "S", "reff": "R"}[kind] + str(i if kind == "data" else (i - n_data) // 2)
-            for i, (q, kind) in enumerate(kinds.items())}
-
-
-def draw_layout(ax: plt.Axes, distance: int, hex_view: bool = False, numbers: bool = False) -> None:
-    """The initial qubit layout: plaquettes in their colour, data qubits on the corners, and on every edge
-    between them a syndrome ancilla and its reference. Brick-wall rectangles as the circuits use them, or
-    regular hexagons with `hex_view`; `numbers` labels every qubit (see `qubit_labels`). Shows one torus
-    period, plaquettes wrapped into it, so edges crossing the boundary still have their ancillas on a side."""
-    kinds = qubit_kinds(distance)
-    pos = positions(distance) if hex_view else {q: q for q in kinds}
-    p = period(distance)
-    for c, colour in hex_centers(distance).items():
-        for shift in [a * p.real + b * p.imag * 1j for a in (-1, 0, 1) for b in (-1, 0, 1)]:
-            corners = [c + shift + d for d in (HEX_CORNERS if hex_view else QUBIT_CORNERS)]
-            ax.fill([q.real for q in corners], [q.imag for q in corners], color=COLORS[colour], alpha=0.25,
-                    edgecolor="0.4")
-    for kind, (fill, label) in QUBIT_KINDS.items():
-        qs = [pos[q] for q, k in kinds.items() if k == kind]
-        ax.scatter([q.real for q in qs], [q.imag for q in qs], s=60 if kind == "data" else 36, facecolor=fill,
-                   edgecolor="#333333", linewidths=1.2, label=f"{label} ({len(qs)})", zorder=3)
-    if numbers:
-        for q, text in qubit_labels(distance).items():
-            ax.annotate(text, (pos[q].real, pos[q].imag), xytext=(4, 3), textcoords="offset points",
-                        fontsize=6.5, color="#222222", fontweight="bold" if kinds[q] == "data" else "normal",
-                        zorder=4)
-    corner = window(list(pos.values()), p)
-    ax.set_xlim(corner.real, corner.real + p.real)
-    ax.set_ylim(corner.imag + p.imag, corner.imag)  # y grows downward, as in stim's timeslice diagrams
-    ax.set_aspect("equal")
-    ax.set_title(f"{len(kinds)} qubits, " + ("regular hexagons (drawing only)" if hex_view
-                                            else "brick wall (the circuits' coordinates)"), fontsize=10)
-
-
 def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) -> plt.Figure:
     """One view of the layout with its legend and, with `numbers`, what the labels mean."""
     fig, ax = plt.subplots(figsize=(6, 8))
-    draw_layout(ax, distance, hex_view, numbers)
+    _draw_layout(ax, distance, hex_view, numbers)
     handles, _ = ax.get_legend_handles_labels()
     handles += [Patch(facecolor=COLORS[c], alpha=0.25, edgecolor="0.4",
                       label=f"colour {c}: sub-round {c} checks\nthe edges linking two of these")
@@ -82,31 +36,15 @@ def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) 
     return fig
 
 
-def layout_png(distance: int, png: Path, hex_view: bool = False, numbers: bool = False) -> None:
-    fig = layout_figure(distance, hex_view, numbers)
-    fig.savefig(png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
 def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, code: str = "css") -> str:
     """Timeslice view of sub-round r, plaquettes coloured underneath; brick-wall or regular hexagons.
-    `numbers` labels every qubit as in the layouts (see `qubit_labels`); `code` "x3z3" draws the X3Z3 step."""
+    `numbers` labels every qubit as in the layouts (see `_qubit_labels`); `code` "x3z3" draws the X3Z3 step."""
     circuit = round_circuit(distance, r, hex_view, code)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))
     svg = style_qubits(svg, list(qubit_kinds(distance).values()))
-    return label_qubits(svg, list(qubit_labels(distance).values())) if numbers else svg
-
-
-def honeycomb_pngs(distance: int, out: Path) -> None:
-    """layout.png and round{r}.png for each of the 6 steps, in every `drawing_dir` of `out`."""
-    for hex_view in (False, True):
-        for numbers in (False, True):
-            folder = drawing_dir(out, hex_view, numbers)
-            layout_png(distance, folder / "layout.png", hex_view, numbers)
-            for r in range(6):
-                svg_png(round_svg(distance, r, hex_view, numbers), folder / f"round{r}.png")
+    return label_qubits(svg, list(_qubit_labels(distance).values())) if numbers else svg
 
 
 def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
@@ -128,17 +66,6 @@ def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
     ax.legend(frameon=False)
 
 
-def ler_png(csv_paths: list[Path], png: Path) -> None:
-    runs = []
-    for path in csv_paths:
-        with open(path, newline="") as f:
-            runs.append(list(csv.DictReader(f)))
-    fig, ax = plt.subplots(figsize=(6, 4.5))
-    draw_ler(ax, runs)
-    fig.savefig(png, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="figure", required=True)
@@ -155,15 +82,86 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.figure == "honeycomb":
-        honeycomb_pngs(args.distance, args.out)
+        _honeycomb_pngs(args.distance, args.out)
         print(f"wrote {args.out}/")
         return
     args.png.parent.mkdir(parents=True, exist_ok=True)
     if args.figure == "timeslices":
-        timeslices_png(args.distance, args.rounds, args.png)
+        _timeslices_png(args.distance, args.rounds, args.png)
     else:
-        ler_png(args.csvs, args.png)
+        _ler_png(args.csvs, args.png)
     print(f"wrote {args.png}")
+
+
+def _timeslices_png(distance: int, rounds: int, png: Path) -> None:
+    svg_png(str(memory_circuit(distance, rounds, round_circuit).diagram("timeslice-svg")), png)
+
+
+def _qubit_labels(distance: int) -> dict[complex, str]:
+    """Qubit -> its label: "D<i>" for data qubit i, "S<k>" and "R<k>" for the syndrome and reference
+    ancillas of edge k (its place in `edge_list`). Stim indices: D<i> is i, S<k> is N + 2k and R<k> is
+    N + 2k + 1, with N the number of data qubits."""
+    kinds = qubit_kinds(distance)
+    n_data = list(kinds.values()).count("data")
+    return {q: {"data": "D", "main": "S", "reff": "R"}[kind] + str(i if kind == "data" else (i - n_data) // 2)
+            for i, (q, kind) in enumerate(kinds.items())}
+
+
+def _draw_layout(ax: plt.Axes, distance: int, hex_view: bool = False, numbers: bool = False) -> None:
+    """The initial qubit layout: plaquettes in their colour, data qubits on the corners, and on every edge
+    between them a syndrome ancilla and its reference. Brick-wall rectangles as the circuits use them, or
+    regular hexagons with `hex_view`; `numbers` labels every qubit (see `_qubit_labels`). Shows one torus
+    period, plaquettes wrapped into it, so edges crossing the boundary still have their ancillas on a side."""
+    kinds = qubit_kinds(distance)
+    pos = positions(distance) if hex_view else {q: q for q in kinds}
+    p = period(distance)
+    for c, colour in hex_centers(distance).items():
+        for shift in [a * p.real + b * p.imag * 1j for a in (-1, 0, 1) for b in (-1, 0, 1)]:
+            corners = [c + shift + d for d in (HEX_CORNERS if hex_view else QUBIT_CORNERS)]
+            ax.fill([q.real for q in corners], [q.imag for q in corners], color=COLORS[colour], alpha=0.25,
+                    edgecolor="0.4")
+    for kind, (fill, label) in QUBIT_KINDS.items():
+        qs = [pos[q] for q, k in kinds.items() if k == kind]
+        ax.scatter([q.real for q in qs], [q.imag for q in qs], s=60 if kind == "data" else 36, facecolor=fill,
+                   edgecolor="#333333", linewidths=1.2, label=f"{label} ({len(qs)})", zorder=3)
+    if numbers:
+        for q, text in _qubit_labels(distance).items():
+            ax.annotate(text, (pos[q].real, pos[q].imag), xytext=(4, 3), textcoords="offset points",
+                        fontsize=6.5, color="#222222", fontweight="bold" if kinds[q] == "data" else "normal",
+                        zorder=4)
+    corner = window(list(pos.values()), p)
+    ax.set_xlim(corner.real, corner.real + p.real)
+    ax.set_ylim(corner.imag + p.imag, corner.imag)  # y grows downward, as in stim's timeslice diagrams
+    ax.set_aspect("equal")
+    ax.set_title(f"{len(kinds)} qubits, " + ("regular hexagons (drawing only)" if hex_view
+                                            else "brick wall (the circuits' coordinates)"), fontsize=10)
+
+
+def _layout_png(distance: int, png: Path, hex_view: bool = False, numbers: bool = False) -> None:
+    fig = layout_figure(distance, hex_view, numbers)
+    fig.savefig(png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _honeycomb_pngs(distance: int, out: Path) -> None:
+    """layout.png and round{r}.png for each of the 6 steps, in every `drawing_dir` of `out`."""
+    for hex_view in (False, True):
+        for numbers in (False, True):
+            folder = drawing_dir(out, hex_view, numbers)
+            _layout_png(distance, folder / "layout.png", hex_view, numbers)
+            for r in range(6):
+                svg_png(round_svg(distance, r, hex_view, numbers), folder / f"round{r}.png")
+
+
+def _ler_png(csv_paths: list[Path], png: Path) -> None:
+    runs = []
+    for path in csv_paths:
+        with open(path, newline="") as f:
+            runs.append(list(csv.DictReader(f)))
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    draw_ler(ax, runs)
+    fig.savefig(png, dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
