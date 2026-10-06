@@ -33,7 +33,7 @@ NOISE = spin
 ETA = 10
 # Monte Carlo shots per (distance, p) point. Smallest resolvable LER ~ 1/SHOTS; a point's relative
 # error ~ 1/sqrt(logical errors), so 5 errors is +-45%.
-SHOTS = 10000
+SHOTS = 50000
 # Physical error rate range. p is the two-qubit gate error; the model scales everything else off it
 # (spin: readout 5p, reset 2p, idling per round 2p, 1-qubit gates p/10).
 P_MIN = 1e-4
