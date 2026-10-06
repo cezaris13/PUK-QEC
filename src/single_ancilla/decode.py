@@ -7,31 +7,25 @@
 edge: "method_a", "method_b" and "method_c" are hexes.pdf's methods A, B and C (src/single_ancilla/<name>/). All run through
 floquet.memory_circuit, so they share every detector and the observable, and only their step circuits (and so
 their noise) differ. Decoding is memory.count_logical_errors: Stim's detector error model, decomposed into
-a graph, matched by PyMatching (docs/decoding.pdf). Writes one CSV row per (scheme, distance, p) and a plot.
-Each row is also appended to <out>.partial.jsonl as it finishes, so rerunning the same command after a crash
-only runs the points still missing.
+a graph, matched by PyMatching (docs/decoding.pdf). One CSV row per (scheme, distance, p), appended as each
+finishes (memory.run_points), so rerunning the same command after a crash only runs the points still missing;
+then a plot.
 """
 import argparse
-import csv
-import json
-import sys
+import os
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from scipy.stats import beta
-from tqdm import tqdm
 
-SRC = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(SRC / "shared"), str(SRC / "two_ancillas")]
 import floquet
 import pairs
-from memory import logical_errors
+from memory import logical_errors, read_rows, run_points
 from noise import NOISE_MODELS, add_noise
 
-for name in ("method_a", "method_b", "method_c"):
-    sys.path.insert(0, str(Path(__file__).resolve().parent / name))
 import method_a
 import method_b
 import method_c
@@ -64,19 +58,6 @@ def legend_blocks(ax, schemes: list[str], distances: list[int], lines: bool) -> 
               bbox_to_anchor=(1.02, 0.45), frameon=False)
 
 
-def read_rows(csv_path: Path) -> list[dict]:
-    """A CSV written here, numbers back as int or float."""
-    def number(text):
-        for kind in (int, float):
-            try:
-                return kind(text)
-            except ValueError:
-                pass
-        return text
-    with open(csv_path, newline="") as f:
-        return [{k: number(v) for k, v in row.items()} for row in csv.DictReader(f)]
-
-
 def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str]) -> dict:
     """What the decoder gets from each scheme: circuit size, how many DEM mechanisms are hyperedges (3+
     detectors, split up by decomposition) and the shortest undetected logical error (graphlike, an upper
@@ -93,6 +74,19 @@ def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str
                          mechanisms=len(sizes), hyperedges=sum(s > 2 for s in sizes),
                          distance=len(noisy.shortest_graphlike_error()))
     return out
+
+
+@lru_cache(maxsize=None)
+def circuit(scheme: str, distance: int) -> "stim.Circuit":
+    """The noiseless memory circuit, d rounds: once per worker."""
+    return floquet.memory_circuit(distance, distance, SCHEMES[scheme])
+
+
+def point(task: dict) -> dict:
+    """One (scheme, distance, p) point of the sweep: its logical errors in up to shots_max shots."""
+    noisy = add_noise(circuit(task["scheme"], task["distance"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
+    errors, ran = logical_errors(noisy, task["shots_max"])
+    return dict(task, shots=ran, errors=errors, ler=errors / ran)
 
 
 def plot(rows: list[dict], png: Path) -> None:
@@ -126,6 +120,7 @@ def main() -> None:
     parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
     parser.add_argument("--shots", type=int, default=10_000)
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/decode"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     args = parser.parse_args()
 
@@ -136,36 +131,11 @@ def main() -> None:
     for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
         print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
 
-    ps = list(np.geomspace(args.p_min, args.p_max, args.num))
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    partial = args.out.with_suffix(".partial.jsonl")
-    done = {}
-    if partial.exists():
-        for line in partial.read_text().splitlines():
-            row = json.loads(line)
-            done[(row["scheme"], row["distance"], row["p"])] = row
-    points = [(name, d, p) for name in args.schemes for d in args.distances for p in ps]
-    with open(partial, "a") as f, tqdm(total=len(points), initial=sum(k in done for k in points)) as bar:
-        for name, d, p in points:
-            if (name, d, p) in done:
-                continue
-            bar.set_description(f"{name} d={d}")
-            circuit = floquet.memory_circuit(d, d, SCHEMES[name])
-            errors, ran = logical_errors(add_noise(circuit, NOISE_MODELS[args.noise](p, args.eta)), args.shots)
-            done[(name, d, p)] = row = dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta,
-                                            p=float(p), shots=ran, errors=errors, ler=errors / ran)
-            f.write(json.dumps(row) + "\n")
-            f.flush()
-            bar.update()
-    rows = [done[k] for k in points]
-    with open(args.out.with_suffix(".csv"), "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(rows)
+    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
+             for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
+    rows = run_points(args.out.with_suffix(".csv"), tasks, point, args.workers)
     plot(rows, args.out.with_suffix(".png"))
-    partial.unlink()
     print(f"wrote {args.out}.csv, {args.out}.png")
-
 
 if __name__ == "__main__":
     main()

@@ -7,8 +7,11 @@ Run as a script it sweeps the two-ancilla scheme (src/two_ancillas/pairs.py). Th
 """
 import argparse
 import csv
-import sys
+import os
+from functools import lru_cache
+from multiprocessing import Pool
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pymatching
@@ -17,6 +20,58 @@ from tqdm import tqdm
 
 from floquet import memory_circuit
 from noise import NOISE_MODELS, add_noise, uniform_noise_model
+
+
+def read_rows(csv_path: Path) -> list[dict]:
+    """A CSV written here, numbers back as int or float; [] if there is none yet."""
+    def number(text):
+        for kind in (int, float):
+            try:
+                return kind(text)
+            except ValueError:
+                pass
+        return text
+    if not Path(csv_path).exists():
+        return []
+    with open(csv_path, newline="") as f:
+        return [{k: number(v) for k, v in row.items()} for row in csv.DictReader(f)]
+
+
+def point_key(row: dict, fields) -> tuple:
+    """A point's identity: its input `fields`, as text, so a row read back from the CSV matches its task."""
+    return tuple(str(row[f]) for f in fields)
+
+
+def append_row(csv_path: Path, row: dict) -> None:
+    """Append one row to `csv_path`, with the header first if the file is new; flushed at once, so a crash loses
+    nothing that finished. Every row of a file must have the same columns, written in the file's order."""
+    new = not Path(csv_path).exists() or Path(csv_path).stat().st_size == 0
+    fields = list(row) if new else next(csv.reader(open(csv_path, newline="")))  # the file's own column order
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if new:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def run_points(csv_path: Path, tasks: list[dict], compute: Callable[[dict], dict], workers: int = os.cpu_count(),
+               desc: str | None = None) -> list[dict]:
+    """Every scheme's data collection: the row of each task (a dict of the point's inputs), in task order.
+    Rows already in `csv_path` are read back; the rest are `compute(task)`d (a top-level function returning
+    the task plus its results) in a Pool of `workers` and appended as each finishes. So a run cut short, or
+    rerun with more points, only computes what is missing."""
+    if not tasks:
+        return []
+    fields = list(tasks[0])
+    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    done = {point_key(r, fields): r for r in read_rows(csv_path)}
+    todo = [t for t in tasks if point_key(t, fields) not in done]
+    with Pool(workers) as pool, tqdm(total=len(tasks), initial=len(tasks) - len(todo), desc=desc) as bar:
+        for row in pool.imap_unordered(compute, todo):
+            append_row(csv_path, row)
+            done[point_key(row, fields)] = row
+            bar.update()
+    return [done[point_key(t, fields)] for t in tasks]
 
 
 def uniform_matcher(circuit: stim.Circuit, p: float = 0.01) -> pymatching.Matching:
@@ -54,8 +109,8 @@ def count_logical_errors(circuit: stim.Circuit, shots: int) -> int:
 
 def sweep(distance: int, rounds: int, noise: str, eta: float, ps: list[float], shots: int,
           step, max_errors: int | None = None, code: str = "css") -> list[dict]:
-    """One row per p: the noise model at that p on `memory_circuit(distance, rounds, step, code=code)`, decoded;
-    up to `shots` shots, fewer once `max_errors` logical errors are in (the row says how many ran)."""
+    """One row per p, in memory (notebooks): the noise model at that p on `memory_circuit(distance, rounds, step,
+    code=code)`, decoded; up to `shots` shots, fewer once `max_errors` logical errors are in."""
     circuit = memory_circuit(distance, rounds, step, code=code)
     rows = []
     for p in tqdm(ps, desc=f"d={distance}"):
@@ -63,6 +118,19 @@ def sweep(distance: int, rounds: int, noise: str, eta: float, ps: list[float], s
         rows.append(dict(distance=distance, rounds=rounds, noise=noise, eta=eta, p=p, shots=ran,
                          errors=errors, ler=errors / ran))
     return rows
+
+
+@lru_cache(maxsize=None)
+def _pairs_circuit(distance: int, rounds: int) -> stim.Circuit:
+    from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
+    return memory_circuit(distance, rounds, round_circuit)
+
+
+def pairs_point(task: dict) -> dict:
+    """`main`'s point: the pairs memory experiment at the task's (distance, rounds, noise, eta, p)."""
+    noisy = add_noise(_pairs_circuit(task["distance"], task["rounds"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
+    errors, ran = logical_errors(noisy, task["shots_max"])
+    return dict(task, shots=ran, errors=errors, ler=errors / ran)
 
 
 def main() -> None:
@@ -75,20 +143,12 @@ def main() -> None:
     parser.add_argument("--p-max", type=float, default=1e-2)
     parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
     parser.add_argument("--shots", type=int, default=10_000)
-    parser.add_argument("--csv", type=Path, required=True)
+    parser.add_argument("--csv", type=Path, required=True, help="appended to point by point; a rerun resumes it")
     args = parser.parse_args()
 
-    # ponytail: the CLI runs the two-ancilla scheme only; decode.py runs every scheme
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "two_ancillas"))
-    from pairs import round_circuit
-
-    ps = list(np.geomspace(args.p_min, args.p_max, args.num))
-    rows = sweep(args.distance, args.rounds, args.noise, args.eta, ps, args.shots, round_circuit)
-    args.csv.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(rows)
+    tasks = [dict(distance=args.distance, rounds=args.rounds, noise=args.noise, eta=args.eta, p=float(p),
+                  shots_max=args.shots) for p in np.geomspace(args.p_min, args.p_max, args.num)]
+    run_points(args.csv, tasks, pairs_point, desc=f"d={args.distance}")
     print(f"wrote {args.csv}")
 
 

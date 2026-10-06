@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson  # also puts src/shared on the path
+from decode import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson
 from floquet import CODES
 
 # As decode.py and footprint.py: colour = distance (DISTANCE_COLOUR), line style and marker = scheme (STYLES), fits in
