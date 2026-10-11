@@ -52,7 +52,7 @@ documented at the top of the [Makefile](Makefile).
 Example:
 
 ```bash
-make decode NOISE=MHBD ETA=100 DISTANCES="3 5 7" SHOTS=100000
+make decode NOISE=HBD ETA=100 DISTANCES="3 5 7" SHOTS=100000
 ```
 
 Output file names include their settings, so runs with different settings don't overwrite each other.
@@ -60,7 +60,7 @@ Output file names include their settings, so runs with different settings don't 
 ## Layout
 
 ```
-src/shared/           floquet.py (lattice, memory_circuit), noise.py (spin / HBD / MHBD), memory.py (decoding),
+src/shared/           floquet.py (lattice, memory_circuit), noise.py (spin / HBD), memory.py (decoding),
                       drawing.py (timeslice helpers): used by both schemes
 src/two_ancillas/     pairs.py (step circuit), plots.py
 src/single_ancilla/   shared/ (layout.py: one-ancilla lattice, corner_readout.py: corner readout used by B and C),
