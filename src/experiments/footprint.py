@@ -5,7 +5,9 @@ count, one line per scheme, extrapolated to a target logical error rate.
         --schemes method_a method_b method_c --out results/single_ancilla/footprint
     .venv/bin/python src/experiments/footprint.py --codes css x3z3 --eta 1000   # X3Z3 vs CSS Floquet code
 
-Each point is physical_to_logical.py's Z memory experiment (d rounds at distance d) at p, decoded by matching. The LER falls
+Each point runs the Z and the X memory experiment (d rounds at distance d) at p, decoded by matching, and combines
+them as x3z3_ler.py does, p_L = 1 - (1 - p_Z)(1 - p_X): either logical failing. Both are needed: under biased noise a
+CSS Z memory barely sees the dominant Z errors, so alone it would make CSS look far better than it is. The LER falls
 exponentially in d, so a straight line through log(LER) vs d (points with at least one logical error) gives
 the d where it reaches --target; the qubit count there is the scheme's qubits per d^2 times d^2. Points with no
 errors are left out: at low p the largest distances need a lot of shots to show any.
@@ -26,6 +28,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 
 from floquet import CODES, memory_circuit
 from memory import logical_errors
@@ -54,10 +57,11 @@ def main() -> None:
     if args.plot_only:
         rows = read_rows(args.out.with_suffix(".csv"))
     else:
-        tasks = [dict(scheme=name, code=code, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
+        tasks = [dict(scheme=name, code=code, distance=d, basis=b, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
                       shots_max=args.shots, max_errors=args.max_errors)
-                 for code in args.codes for name in args.schemes for d in args.distances]
+                 for code in args.codes for name in args.schemes for d in args.distances for b in "ZX"]
         rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
+    rows = _combined(rows)
     for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
         fit = _qubits_needed([r for r in rows if (r["code"], r["scheme"]) == (code, name)], args.target)
         print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
@@ -68,18 +72,36 @@ def main() -> None:
 
 
 @lru_cache(maxsize=None)
-def _circuit(scheme: str, distance: int, code: str):
+def _circuit(scheme: str, distance: int, code: str, basis: str):
     """The noiseless memory circuit, d rounds: once per worker."""
-    return memory_circuit(distance, distance, SCHEMES[scheme], code=code)
+    return memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
 
 
 def _point(task: dict) -> dict:
-    """One (scheme, code, distance) point: its qubit count and LER at p, from up to shots_max shots, stopping at
-    max_errors logical errors."""
-    c = _circuit(task["scheme"], task["distance"], task["code"])
+    """One (scheme, code, distance, basis) point: its qubit count and LER at p, from up to shots_max shots,
+    stopping at max_errors logical errors."""
+    c = _circuit(task["scheme"], task["distance"], task["code"], task["basis"])
     errors, ran = logical_errors(add_noise(c, NOISE_MODELS[task["noise"]](task["p"], task["eta"])), task["shots_max"],
                                  task["max_errors"])
     return dict(task, qubits=c.num_qubits, shots=ran, errors=errors, ler=errors / ran)
+
+
+def _combined(rows: list[dict]) -> list[dict]:
+    """One row per (code, scheme, distance) with both bases: ler = 1 - (1 - p_Z)(1 - p_X), and lo / hi its 95%
+    Clopper-Pearson interval, each basis's ends combined the same way (x3z3_ler.combined)."""
+    either = lambda a, b: 1 - (1 - a) * (1 - b)
+    by = {}
+    for r in rows:
+        by.setdefault((r["code"], r["scheme"], r["distance"]), {})[r["basis"]] = r
+    out = []
+    for bases in by.values():
+        if set(bases) != {"Z", "X"}:
+            continue
+        z, x = bases["Z"], bases["X"]
+        (z_lo, z_hi), (x_lo, x_hi) = clopper_pearson(z["errors"], z["shots"]), clopper_pearson(x["errors"], x["shots"])
+        out.append(dict(z, basis="ZX", errors=z["errors"] + x["errors"], ler=either(z["ler"], x["ler"]),
+                        lo=either(z_lo, x_lo), hi=either(z_hi, x_hi)))
+    return out
 
 
 def _qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
@@ -112,7 +134,7 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
         hollow = len(codes) > 1 and code == "css"
         for r in mine:
             if r["errors"]:
-                lo, hi = clopper_pearson(r["errors"], r["shots"])
+                lo, hi = r["lo"], r["hi"]
                 colour = DISTANCE_COLOUR[r["distance"]]
                 ax.errorbar(r["qubits"], r["ler"], yerr=[[r["ler"] - lo], [hi - r["ler"]]], marker=marker,
                             color=colour, mfc="white" if hollow else colour, ms=6, lw=1, capsize=2, ls="none")
@@ -129,16 +151,20 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
                                label=f"{label}: {needed:,.0f} qubits, Λ = {math.exp(-2 * slope):.1f}"))
     ax.axhline(target, color="0.5", ls=":", lw=1)
     ax.set_xscale("function", functions=(np.sqrt, np.square))
+    # autoscale's margin can push the left edge below 0, where sqrt is NaN and the whole axis vanishes
+    ax.set_xlim(left=0.8 * min(r["qubits"] for r in rows))
+    ax.xaxis.set_major_locator(MaxNLocator(6))  # sqrt spacing crowds the labels at the right end
     ax.set_yscale("log")
-    ax.set(xlabel="Total Physical Qubits", ylabel="Logical Error Rate (d rounds)")
+    ax.set(xlabel="Total Physical Qubits", ylabel="Logical Error Rate, Z or X memory (d rounds)")
     ax.set_title(f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}, p = {rows[0]['p']:g};"
                  f" dotted: target {target:g}", fontsize=10)
     ax.grid(which="both", alpha=0.3, lw=0.5)
     legend_blocks(ax, schemes, sorted({r["distance"] for r in rows}), lines=False)
-    second = ax.get_legend()
-    ax.legend(handles=fits, title="Linefits", fontsize=7, title_fontsize=8, loc="upper left",
-              bbox_to_anchor=(1.02, 0.2), frameon=False)
-    ax.add_artist(second)
+    if fits:  # none when every (code, scheme) is above threshold
+        second = ax.get_legend()
+        ax.legend(handles=fits, title="Linefits", fontsize=7, title_fontsize=8, loc="upper left",
+                  bbox_to_anchor=(1.02, 0.2), frameon=False)
+        ax.add_artist(second)
     fig.savefig(png, dpi=200)
     plt.close(fig)
 

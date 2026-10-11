@@ -22,7 +22,8 @@ from x3z3_ler import CODE_LABEL, blocks, combined, save, style_axes, sweep, swee
 # With no distance to colour, colour is the scheme: bright for X3Z3, pale for CSS (physical_to_logical.py's bright /
 # pale distance pairs).
 SCHEME_COLOUR = {"pairs": ("#1f77b4", "#8fb4e8"), "method_a": ("#d62728", "#f0928f"),
-                 "method_b": ("#2ca02c", "#8fce8f"), "method_c": ("#9467bd", "#c5b0d5")}  # (X3Z3, CSS)
+                 "method_b": ("#2ca02c", "#8fce8f"), "method_c": ("#9467bd", "#c5b0d5"),
+                 "pairs_bell": ("#ff7f0e", "#ffbb78")}  # (X3Z3, CSS)
 
 
 def main() -> None:

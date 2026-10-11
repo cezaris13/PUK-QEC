@@ -123,7 +123,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.out is None:
-        folder = (ROOT / "results" / "two_ancillas" if args.scheme == "pairs"
+        folder = (ROOT / "results" / "two_ancillas" if args.scheme.startswith("pairs")
                   else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
         args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
