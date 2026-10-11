@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from functools import partial
 
 import stim
 
@@ -244,25 +243,10 @@ def _hbd_two_qubit_probabilities(p: float, eta: float) -> list[float]:
     return probs
 
 
-def _hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> NoiseModel:
-    """The HBD circuit-level model, as published (`si1000=False`) or SI1000-scaled.
+def _hbd_noise_model(p: float, eta: float = 10.0) -> NoiseModel:
+    """The HBD circuit-level model, as published: every operation costs `p`, the two-qubit gate error rate.
 
-    Everything scales off `p`, the two-qubit gate error rate:
-
-                        HBD     MHBD (si1000=True)
-        2-qubit gate      p       p
-        1-qubit gate      p       p/10
-        reset             p       2p
-        readout           p       5p
-        idling per round  p       2p
-
-    HBD is flat -- every operation costs `p`. MHBD re-weights it the way SI1000
-    (https://quantum-journal.org/papers/q-2021-12-20-605/) re-weights its own
-    model: cheap single-qubit gates, expensive readout, idling between the two.
-    That makes MHBD, not HBD, the one to compare against `_spin_noise_model`, whose
-    ratios are the same except for reset (2p in both) and how the gates are biased.
-
-    Two differences from `_spin_noise_model` survive in both variants:
+    Two differences from `_spin_noise_model`:
 
     * single-qubit gates are *depolarizing*, not biased -- straight from the paper;
     * there is no per-layer idle noise, only the per-round term. Idle qubits pay
@@ -270,18 +254,17 @@ def _hbd_noise_model(p: float, eta: float = 10.0, si1000: bool = False) -> Noise
 
     https://journals.aps.org/prapplied/abstract/10.1103/q7w6-nljp
     """
-    one_q, reset, readout, rounds = (0.1, 2, 5, 2) if si1000 else (1, 1, 1, 1)
     two_qubit = NoiseTerm(gate_noise_name="PAULI_CHANNEL_2",
                           gate_noise_probs=_hbd_two_qubit_probabilities(p, eta))
     return NoiseModel(
-        R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[reset * p]),
-        M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[readout * p]),
-        H_gate=NoiseTerm(gate_noise_name="DEPOLARIZE1", gate_noise_probs=[one_q * p]),
+        R_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p]),
+        M_gate=NoiseTerm(gate_noise_name="X_ERROR", gate_noise_probs=[p]),
+        H_gate=NoiseTerm(gate_noise_name="DEPOLARIZE1", gate_noise_probs=[p]),
         CX_gate=two_qubit,
         CZ_gate=two_qubit,
         SWAP_gate=two_qubit,
         round_noise_name="PAULI_CHANNEL_1",
-        round_noise_probs=biased_single_qubit_probabilities(rounds * p, eta),
+        round_noise_probs=biased_single_qubit_probabilities(p, eta),
     )
 
 
@@ -307,5 +290,4 @@ def _flip_after_reset(out: list[str], gate_name: str, qubits: list[int], term: N
 NOISE_MODELS = {
     "spin": _spin_noise_model,
     "HBD": _hbd_noise_model,
-    "MHBD": partial(_hbd_noise_model, si1000=True),
 }
