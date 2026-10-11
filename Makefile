@@ -1,5 +1,5 @@
 # Floquet honeycomb code with spin-qubit readout. Every setting below can be overridden on the command line:
-#   make plots NOISE=MHBD ETA=100 DISTANCES="3 5 7 9" SHOTS=100000
+#   make plots NOISE=HBD ETA=100 DISTANCES="3 5 7 9" SHOTS=100000
 #   make drawings DRAW_DISTANCE=2 SENSORS=
 #
 # Targets:
@@ -29,10 +29,10 @@ PY = .venv/bin/python
 
 # Code distances. One CSV and one LER line each; rounds = distance.
 DISTANCES = 3 5 7
-# Noise model from NOISE_MODELS in src/shared/noise.py: spin, HBD or MHBD.
+# Noise model from NOISE_MODELS in src/shared/noise.py: spin or HBD.
 NOISE = spin
 # Bias eta = p_z / (p_x + p_y): 0.5 is depolarizing, large is mostly dephasing. spin biases every
-# channel; HBD/MHBD bias two-qubit gates and per-round idling, but keep 1-qubit gates depolarizing.
+# channel; HBD biases two-qubit gates and per-round idling, but keeps 1-qubit gates depolarizing.
 ETA = 10
 # Monte Carlo shots per (distance, p) point. Smallest resolvable LER ~ 1/SHOTS; a point's relative
 # error ~ 1/sqrt(logical errors), so 5 errors is +-45%.

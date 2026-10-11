@@ -36,10 +36,10 @@ def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) 
     return fig
 
 
-def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, code: str = "css") -> str:
+def round_svg(distance: int, r: int, hex_view: bool, numbers: bool = False, code: str = "css", bell: bool = False) -> str:
     """Timeslice view of sub-round r, plaquettes coloured underneath; brick-wall or regular hexagons.
-    `numbers` labels every qubit as in the layouts (see `_qubit_labels`); `code` "x3z3" draws the X3Z3 step."""
-    circuit = round_circuit(distance, r, hex_view, code)
+    `numbers` labels every qubit as in the layouts (see `_qubit_labels`); `code` "x3z3" draws the X3Z3 step, `bell` the Bell-pair variant."""
+    circuit = round_circuit(distance, r, hex_view, code, bell)
     i2pos = {i: complex(*xy) for i, xy in circuit.get_final_qubit_coordinates().items()}
     svg = color_hexes(str(circuit.diagram("timeslice-svg")), hex_centers(distance),
                       HEX_CORNERS if hex_view else QUBIT_CORNERS, i2pos, period(distance))

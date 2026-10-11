@@ -13,7 +13,7 @@ still missing; then a plot. --sources warns if that code changed since <out>.csv
 """
 import argparse
 import os
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -32,9 +32,9 @@ import method_b
 import method_c
 
 SCHEMES = {"pairs": pairs.round_circuit, "method_a": method_a.round_circuit, "method_b": method_b.round_circuit,
-           "method_c": method_c.round_circuit}
+           "method_c": method_c.round_circuit, "pairs_bell": partial(pairs.round_circuit, bell=True)}
 # line style and marker per scheme; colour is the distance
-STYLES = {"pairs": ("-", "o"), "method_a": ("--", "D"), "method_b": ("-.", "^"), "method_c": (":", "v")}
+STYLES = {"pairs": ("-", "o"), "method_a": ("--", "D"), "method_b": ("-.", "^"), "method_c": (":", "v"), "pairs_bell": ("-", "s")}
 # colour per distance: the N2E3N2 paper's Figure 4 green / blue / red for the odd distances used here
 DISTANCE_COLOUR = {3: "#2ca02c", 5: "#1f77b4", 7: "#d62728", 9: "#9467bd",
                    4: "#8fce8f", 6: "#8fb4e8", 8: "#f0928f", 10: "#c5b0d5"}

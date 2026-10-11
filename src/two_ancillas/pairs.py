@@ -27,23 +27,25 @@ def qubit_kinds(distance: int) -> dict[complex, str]:
     return kinds
 
 
-def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css") -> stim.Circuit:
+def round_circuit(distance: int, r: int, hex_view: bool = False, code: str = "css", bell: bool = False) -> stim.Circuit:
     """Step r of the 6-step schedule rX gZ bX rZ gX bZ: every edge of colour `step_colour(r)` has its XX (even r) or
     ZZ (odd r) parity measured through its spin ancilla pair (`parity_check`).
 
     In the `code` "x3z3" each check uses floquet.check_paulis: XX / ZZ, or XZ / ZX across a column boundary.
     QUBIT_COORDS are the brick-wall coordinates, or the regular-hexagon ones with `hex_view`; they
-    only move where timeslice diagrams draw each qubit.
+    only move where timeslice diagrams draw each qubit. `bell`: each pair starts as a Bell pair instead of
+    swapping (see `parity_check`).
     """
     q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
     pos = positions(distance) if hex_view else {q: q for q in q2i}
     checks = [parity_check(check_paulis("XZ"[r % 2], e.data, code), q2i[e.data[0]], q2i[e.data[1]], q2i[main],
-                           q2i[reff])
+                           q2i[reff], bell)
               for e, main, reff in _edge_ancillas(distance) if e.colour == step_colour(r)]
     return step_circuit({i: pos[q] for q, i in q2i.items()}, checks)
 
 
-def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[list[tuple[str, list[int]]]]:
+def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int,
+                 bell: bool = False) -> list[list[tuple[str, list[int]]]]:
     """Measure P_d0 P_d1 (`pauli` "X", "Y" or "Z") on one edge through its spin ancilla pair; a two-letter
     `pauli` such as "XZ" measures X_d0 Z_d1 (the X3Z3 code's mixed checks).
 
@@ -58,8 +60,18 @@ def parity_check(pauli: str, d0: int, d1: int, main: int, reff: int) -> list[lis
     SWAP) controls an X on the syndrome, copying Z_d0 Z_d1 straight into its Z.
     Returns its layers, each a list of (gate, targets), for the caller to TICK between: `round_circuit`
     runs layer k of every edge together. Leaves one measurement record.
+
+    With `bell` there is no SWAP: the pair starts in (|00> + |11>)/sqrt2, stabilised by both XX and ZZ, and
+    each ancilla touches only the data qubit next to it, both at once. Z: the CXs onto main and reff copy
+    Z_d0 Z_d1 into the pair's ZZ. Otherwise main and reff control P_d0 and P_d1, putting P_d0 P_d1 onto the
+    pair's XX, and an H on both turns that into the ZZ that MZZ reads. The reference is then no longer immune
+    to dephasing.
     """
     reset, first, second, turn = collect(pauli, d0, d1, main, reff)
+    if bell:
+        turn = [[("H", [main, reff])]] if turn else []
+        return [[("R", [main, reff])], [("H", [main])], [("CX", [main, reff])], [first, second], *turn,
+                [("MZZ", [main, reff])]]
     return [[reset, ("R", [reff])], [first], [("SWAP", [main, reff])], [second], *turn, [("MZZ", [main, reff])]]
 
 
@@ -73,10 +85,3 @@ def _edge_ancillas(distance: int) -> list[tuple[Edge, complex, complex]]:
     read out together by spin blockade (as in SpinQEC). main does the calculation (holds the syndrome) and sits
     next to data[0]; reff, its readout reference held in a known state, sits next to data[1]."""
     return [(e, *_thirds(*e.ends, distance)) for e in edge_list(distance)]
-
-
-def _check(distance: int) -> None:
-    """floquet.check_scheme for the pairs: record j of step r is the parity of the j-th edge of its colour."""
-    q2i = {q: i for i, q in enumerate(qubit_kinds(distance))}
-    check_scheme(distance, round_circuit, lambda r: [e.data for e in edge_list(distance) if e.colour == step_colour(r)],
-                 q2i)
