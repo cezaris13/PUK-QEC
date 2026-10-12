@@ -52,7 +52,7 @@ SCHEMES = pairs method_a method_b method_c
 # LER vs physical qubits at this one p, extrapolated to TARGET. Low p needs many shots per point before the
 # larger distances see any logical errors to fit.
 P = 1e-3
-TARGET = 1e-6
+TARGET = 1e-8
 FOOTPRINT_SHOTS = 10000000
 # Distances for the fit: d = 5 already needs ~10^7 shots at p = 1e-3 to see errors, d = 7 far more.
 FOOTPRINT_DISTANCES = 3 5
