@@ -6,8 +6,8 @@ plus --p-fixed in the p grid; with the same settings both write and reuse the sa
     .venv/bin/python src/experiments/x3z3_bias.py --plot-only --out <out>    # redraw from <out>.csv
 
     <out>_bias.png  (a) threshold vs eta: where the largest distance's p_L curve crosses the smallest's, the lower
-                    of the Z and X memories', as paper Fig. 6; (b) p_L vs eta at --p-fixed for the largest distance,
-                    as Fig. 7. Colour = scheme, bright and filled X3Z3, pale and hollow CSS.
+                    of the Z and X memories', as paper Fig. 6; (b) p_L vs eta at
+                    --p-fixed for the largest distance, as Fig. 7. Both with 95% bands from the shot noise. Colour = scheme, bright and filled X3Z3, pale and hollow CSS.
 """
 from pathlib import Path
 
@@ -36,9 +36,11 @@ def main() -> None:
     print(f"wrote {png}")
 
 
-def _threshold(rows: list[dict], code: str, scheme: str, eta: float) -> float:
-    """Lower of the Z and X memories' thresholds: the p where log(p_L) of the largest distance first rises
-    above the smallest's, interpolated in log p; nan if they never cross inside the grid."""
+def _threshold(rows: list[dict], code: str, scheme: str, eta: float) -> tuple[float, float, float]:
+    """(p_th, lo, hi) of the lower of the Z and X memories' thresholds: the p where log(p_L) of the largest
+    distance first rises above the smallest's, interpolated in log p; nan if they never cross inside the grid.
+    lo / hi are its 95% interval (+-1.96 sigma): each point's binomial sigma(log p_L) ~ sqrt((1 - p_L) / errors),
+    carried through the interpolation, to match the Clopper-Pearson bands of (b)."""
     found = []
     for basis in "ZX":
         mine = [r for r in rows if (r["code"], r["scheme"], r["basis"]) == (code, scheme, basis)
@@ -46,15 +48,22 @@ def _threshold(rows: list[dict], code: str, scheme: str, eta: float) -> float:
         ds = sorted({int(r["distance"]) for r in mine})
         if len(ds) < 2:
             continue
-        ler = {(int(r["distance"]), float(r["p"])): int(r["errors"]) / int(r["shots"]) for r in mine}
+        ler = {(int(r["distance"]), float(r["p"])): (int(r["errors"]), int(r["shots"])) for r in mine}
         ps = sorted(p for p in {p for _, p in ler} if (ds[0], p) in ler and (ds[-1], p) in ler)
-        gap = [np.log(ler[ds[-1], p]) - np.log(ler[ds[0], p]) for p in ps]
+        log = lambda d, p: np.log(ler[d, p][0] / ler[d, p][1])
+        var = lambda d, p: (1 - ler[d, p][0] / ler[d, p][1]) / ler[d, p][0]
+        gap = [log(ds[-1], p) - log(ds[0], p) for p in ps]
         for i in range(len(ps) - 1):
             if gap[i] < 0 <= gap[i + 1]:
-                t = gap[i] / (gap[i] - gap[i + 1])
-                found.append(float(np.exp(np.log(ps[i]) + t * (np.log(ps[i + 1]) - np.log(ps[i])))))
+                g0, g1, span = gap[i], gap[i + 1], np.log(ps[i + 1]) - np.log(ps[i])
+                t = g0 / (g0 - g1)
+                v0, v1 = (var(ds[-1], ps[k]) + var(ds[0], ps[k]) for k in (i, i + 1))
+                sigma = 1.96 * span * np.hypot(g1 * np.sqrt(v0), g0 * np.sqrt(v1)) / (g0 - g1) ** 2  # d(t)/d(gap)
+                found.append(float(np.log(ps[i]) + t * span) + np.array([0, -sigma, sigma]))
                 break
-    return min(found, default=float("nan"))
+    if not found:
+        return (float("nan"),) * 3
+    return tuple(float(x) for x in np.exp(min(found, key=lambda f: f[0])))
 
 
 def _combos(rows: list[dict]) -> list[tuple[str, str]]:
@@ -74,7 +83,9 @@ def _bias_figure(rows: list[dict], p_fixed: float, png: Path) -> None:
         colour = SCHEME_COLOUR[scheme][code == "css"]
         style = dict(ls=ls, marker=marker, ms=5, lw=1.5, color=colour, mec=colour,
                      mfc=colour if code == "x3z3" else "white")
-        a.plot(etas, [_threshold(rows, code, scheme, eta) for eta in etas], **style)
+        th = np.array([_threshold(rows, code, scheme, eta) for eta in etas])
+        a.plot(etas, th[:, 0], **style)
+        a.fill_between(etas, th[:, 1], th[:, 2], color=colour, alpha=0.12, lw=0)
         pts = [(eta, pl[k]) for eta in etas if (k := (code, scheme, d_max, eta, p_fixed)) in pl]
         if pts:
             b.plot([e for e, _ in pts], [v[0] for _, v in pts], **style)

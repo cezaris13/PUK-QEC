@@ -1,5 +1,6 @@
 // Loading and reading the result files under results/: LER CSVs (physical_to_logical.py, shared/memory.py),
-// footprint CSVs (footprint.py) and threshold summaries (thresholds.py's <name>_thresholds.csv).
+// footprint CSVs (footprint.py), threshold summaries (thresholds.py's <name>_thresholds.csv) and the X3Z3 vs CSS
+// bias sweeps (x3z3_bias.py / x3z3_ler.py).
 
 export const PCT = 100;
 
@@ -60,10 +61,17 @@ function thresholdRun(rows: SummaryRow[]): ThresholdRun {
   };
 }
 
+/** One point of x3z3_ler.py's sweep: one memory basis, errors out of shots, no ler column. */
+export interface BiasRow {
+  code: string; scheme: string; distance: number; eta: number; p: number; basis: string;
+  noise: string; shots: number; errors: number;
+}
+
 export interface Results {
   ler: Series[];
   foot: Record<string, Row[]>;
   surf: Record<string, ThresholdRun>;
+  bias: Record<string, BiasRow[]>;
 }
 
 // ponytail: plain split, fine for the unquoted CSVs this repo writes
@@ -80,18 +88,22 @@ export function parseCSV(text: string): Row[] {
 export const base = (path: string) => path.split("/").pop()!;
 export const runLabel = (path: string) => base(path).replace(/(_thresholds)?\.csv$/, "");
 const SCHEME_NAME: Record<string, string> = {
-  pairs: "pairs (2 ancillas)", method_a: "method A", method_b: "method B", method_c: "method C",
+  pairs: "pairs (2 ancillas)", pairs_bell: "pairs, Bell state", method_a: "method A", method_b: "method B", method_c: "method C",
 };
 export const schemeName = (s: string) => SCHEME_NAME[s] ?? s;
 
 export async function loadAll(): Promise<Results> {
   const files: string[] = await (await fetch("/api/files")).json();
   const groups: Record<string, Series> = {}, foot: Record<string, Row[]> = {};
-  const surf: Record<string, ThresholdRun> = {};
+  const surf: Record<string, ThresholdRun> = {}, bias: Record<string, BiasRow[]> = {};
   const texts = await Promise.all(files.map(async f => (await fetch("/" + f)).text()));
   files.forEach((f, i) => {                     // in server order, so the selects stay newest first
     const rows = parseCSV(texts[i]);
     if (rows.length && "group" in rows[0]) { surf[f] = thresholdRun(rows as unknown as SummaryRow[]); return; }
+    if (rows.length && "basis" in rows[0] && "eta" in rows[0] && !("ler" in rows[0]) && !("theta" in rows[0])) {
+      bias[f] = rows as unknown as BiasRow[];
+      return;
+    }
     // thresholds.py's <name>.csv: its raw points, already summed up in <name>_thresholds.csv
     if (!rows.length || !("ler" in rows[0]) || "theta" in rows[0]) return;
     if ("qubits" in rows[0]) { foot[f] = rows; return; }
@@ -104,7 +116,7 @@ export async function loadAll(): Promise<Results> {
         label: `${schemeName(scheme)} · ${base(run)}` + (r.scheme ? "" : " (memory.py)") }).rows.push(r);
     }
   });
-  return { ler: Object.values(groups).sort((a, b) => a.label.localeCompare(b.label)), foot, surf };
+  return { ler: Object.values(groups).sort((a, b) => a.label.localeCompare(b.label)), foot, surf, bias };
 }
 
 export const binomSE = (r: Row) => Math.sqrt(r.ler * (1 - r.ler) / r.shots);
