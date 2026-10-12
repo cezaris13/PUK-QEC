@@ -20,6 +20,23 @@ def svg_png(svg: str, png: Path) -> None:
                      background_color="white")
 
 
+def tiled(svg: str, rows: int) -> str:
+    """A stim timeslice-svg with its tick tiles laid out again in `rows` rows, in tick order (stim picks a
+    near-square grid). Each tile is a window onto the one copy of the drawing, so nothing is duplicated."""
+    tiles = sorted((int(k), *map(float, xywh)) for k, *xywh in re.findall(
+        r'<rect id="tick_border:(\d+):[^"]*" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"', svg))
+    w, h = tiles[0][3], tiles[0][4]
+    xs, ys = sorted({t[1] for t in tiles}), sorted({t[2] for t in tiles})
+    step = complex(xs[1] - xs[0] if len(xs) > 1 else w, ys[1] - ys[0] if len(ys) > 1 else h)  # stim's gaps
+    cols = -(-len(tiles) // rows)
+    body = svg.split(">", 1)[1].rsplit("</svg>", 1)[0]
+    windows = "".join(f'<svg x="{k % cols * step.real}" y="{k // cols * step.imag}" width="{w}" height="{h}" '
+                      f'viewBox="{x} {y} {w} {h}"><use xlink:href="#timeslices"/></svg>' for k, x, y, *_ in tiles)
+    return (f'<svg viewBox="0 0 {(cols - 1) * step.real + w} {(rows - 1) * step.imag + h}" version="1.1" '
+            f'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+            f'<defs><g id="timeslices">{body}</g></defs>{windows}</svg>')
+
+
 def window(points: list[complex], torus_period: complex) -> complex:
     """Top-left corner of the one-torus-period window centred on `points`."""
     xs, ys = [p.real for p in points], [p.imag for p in points]

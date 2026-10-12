@@ -5,6 +5,9 @@ __pycache__/
 # results
 
 *.tex
+*.sty
+*.blg
+*.bib
 *.pdf
 
 viewer/node_modules/
