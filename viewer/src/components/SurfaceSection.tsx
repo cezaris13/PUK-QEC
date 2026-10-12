@@ -5,25 +5,26 @@ import { Plot, type Trace } from "./Plot";
 
 type Key = "A" | "B";
 
-/** Run A shaded by p_th, run B a flat overlay, plus the bias-sweep ranges as bars on the p_G and p_T axes. */
+/** Each run's surface and dots shaded by p_th (A copper, B black to its series colour, each with its colourbar),
+ * plus the bias-sweep ranges as bars on the p_G and p_T axes. */
 function surfaceTraces(path: string, d: ThresholdRun, key: Key): Trace[] {
-  const pts = surfPoints(d), shaded = key === "A";
-  const c = css(shaded ? "--series-a" : "--series-b");
+  const pts = surfPoints(d), isA = key === "A";
+  const scale = isA ? COPPER : [[0, "rgb(0,0,0)"], [1, css("--series-b")]];
   const P = (k: "x" | "y" | "z" | "p") => pts.map(q => q[k]);
+  const range = { cmin: Math.min(...P("p")), cmax: Math.max(...P("p")) };
   const out: Trace[] = [];
   if (pts.length >= 3) out.push({
     type: "mesh3d", x: P("x"), y: P("y"), z: P("z"), delaunayaxis: "z", name: runLabel(path),
     hoverinfo: "skip", flatshading: true, lighting: { ambient: 0.9, diffuse: 0.2, specular: 0 },
-    ...(shaded
-      ? { intensity: P("p"), colorscale: COPPER, showscale: true, opacity: 0.85,
-          colorbar: { title: { text: "p_th (%)", side: "top" }, thickness: 14, len: 0.7,
-                      outlinewidth: 0, tickfont: { color: css("--text-secondary") } } }
-      : { color: c, opacity: 0.35 }),
+    intensity: P("p"), colorscale: scale, ...range, showscale: true, opacity: isA ? 0.5 : 0.35,
+    colorbar: { title: { text: `p_th (%) · ${key}`, side: "top" }, thickness: 14, len: 0.7, x: isA ? 1.0 : 1.12,
+                outlinewidth: 0, tickfont: { color: css("--text-secondary") } },
   });
   out.push({
     type: "scatter3d", mode: "markers", x: P("x"), y: P("y"), z: P("z"), showlegend: false,
     customdata: pts.map(q => [q.p, q.e]),
-    marker: { size: 3, color: shaded ? css("--text-primary") : c },
+    // coloured by p_th on the surface's scale, as thresholds.py's scatter
+    marker: { size: 4, color: P("p"), colorscale: scale, ...range, symbol: isA ? "circle" : "diamond" },
     hovertemplate: "p_G %{x:.3f} %<br>p_T %{y:.3f} %<br>p_R %{z:.3f} %<br>" +
                    `p_th %{customdata[0]:.3f} ± %{customdata[1]:.3f} %<extra>${runLabel(path)}</extra>`,
   });
@@ -95,8 +96,8 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
                    camera: { eye: { x: 1.6, y: 1.6, z: 1.0 } } } }} />
       <p className="note">
         Each dot is one direction's crossing point p<sub>th</sub>·(cos θ cos φ, cos θ sin φ, sin θ): gate, idling
-        and readout error at threshold. Run A is shaded by its length p<sub>th</sub> (copper, as in
-        arXiv:2306.17786); run B is a flat overlay. The bars on the p<sub>G</sub> and p<sub>T</sub> axes span the
+        and readout error at threshold. Each run, surface and dots, is shaded by its length p<sub>th</sub>:
+        run A copper (as in arXiv:2306.17786 and thresholds.py), run B black to its series colour (diamonds). The bars on the p<sub>G</sub> and p<sub>T</sub> axes span the
         thresholds of the bias sweep below.
       </p>
       <Plot msg={none && "Threshold vs bias appears with the first threshold run."}
