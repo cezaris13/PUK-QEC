@@ -16,7 +16,7 @@ import stim
 from floquet import (CODES, HEX_CORNERS, QUBIT_CORNERS, Layers, check_paulis, check_scheme, hex_centers, period,
                      qubits, step_circuit, step_colour, torus)
 from layout import edge_list, positions, qubit_kinds, style_ticks
-from drawing import color_hexes, drawing_dir, svg_png
+from drawing import color_hexes, drawing_dir, svg_png, tiled
 
 # Where every single-ancilla run writes: results/single_ancilla/, mirroring src/single_ancilla/.
 RESULTS = Path(__file__).resolve().parents[3] / "results" / "single_ancilla"
@@ -161,7 +161,8 @@ def main(scheme, name: str, doc: str, away: bool = False) -> None:
         for numbers in (False, True):
             folder = drawing_dir(out, hex_view, numbers)
             for r in range(6):
-                svg_png(round_svg(distance, r, scheme, hex_view, numbers, away, sensors), folder / f"round{r}.png")
+                svg_png(tiled(round_svg(distance, r, scheme, hex_view, numbers, away, sensors), rows=2),
+                        folder / f"round{r}.png")
     print(f"wrote {out}/")
 
 

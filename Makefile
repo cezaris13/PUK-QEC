@@ -32,7 +32,7 @@ DISTANCES = 3 5 7
 # Noise model from NOISE_MODELS in src/shared/noise.py: spin or HBD.
 NOISE = spin
 # Bias eta = p_z / (p_x + p_y): 0.5 is depolarizing, large is mostly dephasing. spin biases every
-# channel; HBD biases two-qubit gates and per-round idling, but keeps 1-qubit gates depolarizing.
+# channel; HBD bias two-qubit gates and per-round idling, but keep 1-qubit gates depolarizing.
 ETA = 10
 # Monte Carlo shots per (distance, p) point. Smallest resolvable LER ~ 1/SHOTS; a point's relative
 # error ~ 1/sqrt(logical errors), so 5 errors is +-45%.
@@ -146,8 +146,7 @@ paths:
 # ============================================================================================================
 
 # Every drawing at DRAW_DISTANCE:
-# - two ancillas: one period's timeslices in
-#   results/two_ancillas/timeslices_d<DRAW_DISTANCE>.png, and the qubit layout with the 6 steps' coloured
+# - two ancillas: the qubit layout with the 6 steps' coloured
 #   timeslices in results/two_ancillas/honeycomb_d<DRAW_DISTANCE>/;
 # - one ancilla, methods A, B and C of hexes.pdf: each one's 6 steps, with charge sensors unless SENSORS is
 #   empty, in results/single_ancilla/method_*/d<DRAW_DISTANCE>/; method A also draws the layout.
@@ -155,7 +154,6 @@ paths:
 # (every qubit labelled: Di data, Sk / Rk syndrome / reference ancilla), holding layout.png and round0-5.png.
 # Phony, so it always redraws and picks up SENSORS.
 drawings:
-	$(PY) src/two_ancillas/plots.py timeslices --distance $(DRAW_DISTANCE) --rounds 1 --png $(TWO)/timeslices_d$(DRAW_DISTANCE).png
 	$(PY) src/two_ancillas/plots.py honeycomb --distance $(DRAW_DISTANCE) --out $(TWO)/honeycomb_d$(DRAW_DISTANCE)
 	for m in a b c; do \
 		$(PY) src/single_ancilla/method_$$m/method_$$m.py --distance $(DRAW_DISTANCE) --$(if $(SENSORS),,no-)sensors || exit 1; \
@@ -172,9 +170,9 @@ $(TWO)/honeycomb_d%/rectangle/plain/layout.png: src/shared/floquet.py src/shared
 
 plots: $(RUN)_ler.png
 
-# One CSV per distance, d rounds each. Always run: memory.py appends each p as it finishes and skips those already
-# in the CSV, so a cut-short run picks up where it stopped (it warns if TWO_SRC changed since; delete the CSV to
-# start over). Precious: make keeps it on Ctrl-C.
+# One CSV per distance, d rounds each.
+# Always run: memory.py appends each p as it finishes and skips those already in the CSV, so a cut-short run picks
+# up where it stopped (it warns if TWO_SRC changed since; delete the CSV to start over). Precious: kept on Ctrl-C.
 $(RUN)_d%.csv: FORCE
 	$(PY) src/shared/memory.py --distance $* --rounds $* --noise $(NOISE) --eta $(ETA) --shots $(SHOTS) \
 		--p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --csv $@ --sources $(TWO_SRC)
@@ -192,24 +190,23 @@ $(RUN)_ler.png: $(CSVS) src/shared/drawing.py src/two_ancillas/plots.py
 # DISTANCES, colour = distance, line style = scheme.
 physical-to-logical: $(PHYSICAL_TO_LOGICAL).png
 
-$(PHYSICAL_TO_LOGICAL).png: src/experiments/physical_to_logical.py $(ONE_SRC)
-	$(PY) src/experiments/physical_to_logical.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(PHYSICAL_TO_LOGICAL) --sources $(ONE_SRC)
+$(DECODE).png: src/single_ancilla/decode.py $(ONE_SRC)
+	$(PY) src/single_ancilla/decode.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
+		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(DECODE)
 
 # LER vs physical qubits at P for each of SCHEMES, and the qubits each needs for LER TARGET.
 footprint: $(FOOTPRINT).png
 
-$(FOOTPRINT).png: src/experiments/footprint.py src/experiments/physical_to_logical.py $(ONE_SRC)
-	$(PY) src/experiments/footprint.py --schemes $(SCHEMES) --codes $(FOOTPRINT_CODES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT) --sources $(ONE_SRC)
+$(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $(ONE_SRC)
+	$(PY) src/single_ancilla/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
+		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
 # Phony: the script names the files from its settings.
 thresholds:
-	$(PY) src/experiments/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
-		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only) \
-		--sources $(ONE_SRC)
+	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
+		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only)
 
 # thresholds for every scheme in SCHEMES, one after the other; stops at the first that fails.
 thresholds-all:

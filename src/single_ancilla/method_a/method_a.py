@@ -6,7 +6,7 @@ import stim
 from matplotlib.patches import Patch
 
 from corner_readout import local_pairs, pixel_period, readout_squares
-from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, svg_png, window
+from drawing import COLORS, QUBIT_KINDS, color_hexes, drawing_dir, svg_png, tiled, window
 from floquet import (HEX_CORNERS, QUBIT_CORNERS, check_paulis, check_scheme, collect, hex_centers, period, qubits,
                      sorted_complex, step_circuit, step_colour, torus)
 from layout import edge_list, positions, qubit_kinds, style_ticks
@@ -173,7 +173,7 @@ def main() -> None:
             folder = drawing_dir(out, hex_view, numbers)
             _layout_png(distance, hex_view, numbers, folder / "layout.png")
             for r in range(6):
-                svg_png(round_svg(distance, r, hex_view, numbers, sensors), folder / f"round{r}.png")
+                svg_png(tiled(round_svg(distance, r, hex_view, numbers, sensors), rows=2), folder / f"round{r}.png")
     print(f"wrote {out}/")
 
 
