@@ -34,7 +34,7 @@ import method_c
 SCHEMES = {"pairs": pairs.round_circuit, "method_a": method_a.round_circuit, "method_b": method_b.round_circuit,
            "method_c": method_c.round_circuit, "pairs_bell": partial(pairs.round_circuit, bell=True)}
 # line style and marker per scheme; colour is the distance
-STYLES = {"pairs": ("-", "o"), "method_a": ("--", "D"), "method_b": ("-.", "^"), "method_c": (":", "v"), "pairs_bell": ("-", "s")}
+STYLES = {"pairs": ("-", "o"), "method_a": ("--", "D"), "method_b": ("-.", "^"), "method_c": (":", "v"), "pairs_bell": ((0, (6, 2, 1, 2, 1, 2)), "s")}
 # colour per distance: the N2E3N2 paper's Figure 4 green / blue / red for the odd distances used here
 DISTANCE_COLOUR = {3: "#2ca02c", 5: "#1f77b4", 7: "#d62728", 9: "#9467bd",
                    4: "#8fce8f", 6: "#8fb4e8", 8: "#f0928f", 10: "#c5b0d5"}
@@ -86,7 +86,8 @@ def main() -> None:
     parser.add_argument("--p-min", type=float, default=1e-4)
     parser.add_argument("--p-max", type=float, default=1e-2)
     parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
-    parser.add_argument("--shots", type=int, default=10_000)
+    parser.add_argument("--shots", type=int, default=10_000, help="most shots per point")
+    parser.add_argument("--max-errors", type=int, help="stop a point at this many logical errors")
     parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/physical_to_logical"), help="writes <out>.csv and <out>.png")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
@@ -100,7 +101,9 @@ def main() -> None:
     for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
         print(f"{name:12} d={args.distances[0]}: " + ", ".join(f"{k} {v}" for k, v in s.items()))
 
-    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots)
+    tasks = [dict(scheme=name, distance=d, rounds=d, noise=args.noise, eta=args.eta, p=float(p), shots_max=args.shots,
+                  # only when set, so CSVs written without it still resume
+                  **({"max_errors": args.max_errors} if args.max_errors else {}))
              for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
     rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
     _plot(rows, args.out.with_suffix(".png"))
@@ -114,9 +117,10 @@ def _circuit(scheme: str, distance: int) -> "stim.Circuit":
 
 
 def _point(task: dict) -> dict:
-    """One (scheme, distance, p) point of the sweep: its logical errors in up to shots_max shots."""
+    """One (scheme, distance, p) point of the sweep: its logical errors in up to shots_max shots, stopping at
+    max_errors if set."""
     noisy = add_noise(_circuit(task["scheme"], task["distance"]), NOISE_MODELS[task["noise"]](task["p"], task["eta"]))
-    errors, ran = logical_errors(noisy, task["shots_max"])
+    errors, ran = logical_errors(noisy, task["shots_max"], task.get("max_errors"))
     return dict(task, shots=ran, errors=errors, ler=errors / ran)
 
 

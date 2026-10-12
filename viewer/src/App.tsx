@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BiasSection } from "./components/BiasSection";
 import { FootSection } from "./components/FootSection";
 import { LerSection } from "./components/LerSection";
 import { SurfaceSection } from "./components/SurfaceSection";
@@ -45,6 +46,7 @@ export function App() {
         : <>
             <LerSection ler={data.ler} />
             <SurfaceSection surf={data.surf} />
+            <BiasSection bias={data.bias} />
             <FootSection foot={data.foot} />
           </>}
     </>
