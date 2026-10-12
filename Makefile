@@ -52,12 +52,14 @@ SCHEMES = pairs method_a method_b method_c
 # LER vs physical qubits at this one p, extrapolated to TARGET. Low p needs many shots per point before the
 # larger distances see any logical errors to fit.
 P = 1e-3
-TARGET = 1e-6
+TARGET = 1e-8
 FOOTPRINT_SHOTS = 10000000
 # Distances for the fit: d = 5 already needs ~10^7 shots at p = 1e-3 to see errors, d = 7 far more.
 FOOTPRINT_DISTANCES = 3 5
 # Floquet codes, css and/or x3z3: with both, one plot compares them (X3Z3 filled markers, CSS hollow).
 FOOTPRINT_CODES = css
+# code:scheme fits not to draw (their points stay), e.g. HIDE_FITS=css:pairs_bell when one runs far off the axis.
+HIDE_FITS =
 
 # --- Thresholds ---------------------------------------------------------------------------------------------
 # One scheme at a time: pairs, method_a, method_b or method_c.
@@ -89,6 +91,8 @@ X3Z3_ETAS = 0.5 1 3 10 30 100 1000
 X3Z3_P_MIN = 2e-4
 X3Z3_P_MAX = 1.5e-2
 X3Z3_NUM = 12
+# A point stops at this many logical errors: the threshold bands of x3z3-bias shrink as 1/sqrt of it.
+X3Z3_MAX_ERRORS = 500
 
 # --- Drawings -----------------------------------------------------------------------------------------------
 # Lattice size: 12*d^2 data qubits plus 2 spin ancillas on each of the 18*d^2 edges, so 1 is 12 + 36 qubits
@@ -201,7 +205,7 @@ footprint: $(FOOTPRINT).png
 
 $(FOOTPRINT).png: src/experiments/footprint.py src/experiments/physical_to_logical.py $(ONE_SRC)
 	$(PY) src/experiments/footprint.py --schemes $(SCHEMES) --codes $(FOOTPRINT_CODES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT) --sources $(ONE_SRC)
+		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) $(if $(HIDE_FITS),--hide-fits $(HIDE_FITS)) --out $(FOOTPRINT) --sources $(ONE_SRC)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
 # bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
@@ -236,7 +240,7 @@ thresholds-paper:
 # <settings>_bias.png (threshold and LER at P vs eta), x3z3-ler <settings>_ler_eta<eta>.png per eta. For LER vs
 # qubits: make footprint FOOTPRINT_CODES="css x3z3". Phony: the scripts name their files and resume from the CSV.
 X3Z3_ARGS = --schemes $(SCHEMES) --noise $(NOISE) --distances $(X3Z3_DISTANCES) --etas $(X3Z3_ETAS) \
-	--p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --shots $(SHOTS) \
+	--p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --shots $(SHOTS) --max-errors $(X3Z3_MAX_ERRORS) \
 	--out $(ONE)/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
 
 # One after the other: x3z3-bias simulates the shared CSV, then x3z3-ler finds every point there.
