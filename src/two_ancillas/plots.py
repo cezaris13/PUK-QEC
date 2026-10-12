@@ -69,10 +69,6 @@ def draw_ler(ax: plt.Axes, runs: list[list[dict]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="figure", required=True)
-    ts = sub.add_parser("timeslices")
-    ts.add_argument("--distance", type=int, default=3)
-    ts.add_argument("--rounds", type=int, default=3)
-    ts.add_argument("--png", type=Path, required=True)
     hc = sub.add_parser("honeycomb", help="qubit layout and coloured sub-round timeslices, into --out")
     hc.add_argument("--distance", type=int, default=1)
     hc.add_argument("--out", type=Path, required=True)
@@ -86,15 +82,8 @@ def main() -> None:
         print(f"wrote {args.out}/")
         return
     args.png.parent.mkdir(parents=True, exist_ok=True)
-    if args.figure == "timeslices":
-        _timeslices_png(args.distance, args.rounds, args.png)
-    else:
-        _ler_png(args.csvs, args.png)
+    _ler_png(args.csvs, args.png)
     print(f"wrote {args.png}")
-
-
-def _timeslices_png(distance: int, rounds: int, png: Path) -> None:
-    svg_png(str(memory_circuit(distance, rounds, round_circuit).diagram("timeslice-svg")), png)
 
 
 def _qubit_labels(distance: int) -> dict[complex, str]:

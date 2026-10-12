@@ -29,6 +29,7 @@ Step 0 of each scheme at distance 1, one panel per tick (`make drawings`, hex vi
 
 ```bash
 make venv          # .venv with requirements.txt, plus a Jupyter kernel "floquet_code"
+make paths         # (run by venv) lists src/'s module folders in .venv, so `import floquet` etc. just work
 ```
 
 ## Running
@@ -38,10 +39,10 @@ documented at the top of the [Makefile](Makefile).
 
 | Target | What it makes |
 |---|---|
-| `make decode` | LER vs p for every scheme in `SCHEMES` (default: all four), in one CSV and one plot |
+| `make physical-to-logical` | LER vs p for every scheme in `SCHEMES` (default: all four), in one CSV and one plot |
 | `make plots` | LER vs p for the pairs scheme only, one CSV per distance |
-| `make footprint` | LER vs physical qubit count at one `P`, extrapolated to `TARGET` |
-| `make x3z3` | X³Z³ vs CSS Floquet code for every scheme under `NOISE`: threshold vs η, LER vs p, LER vs qubits |
+| `make footprint` | LER vs physical qubit count at one `P`, extrapolated to `TARGET`; `FOOTPRINT_CODES="css x3z3"` compares the codes |
+| `make x3z3` | X³Z³ vs CSS Floquet code for every scheme under `NOISE`: `x3z3-bias` (threshold and LER vs η) and `x3z3-ler` (LER vs p) |
 | `make thresholds` | threshold surface and threshold vs bias for `SCHEME` (after IBM's QEC-with-spin-qubits); `CODE=x3z3` for X³Z³ |
 | `make thresholds-all` | `thresholds` for every scheme; `thresholds-medium` / `thresholds-paper` with more shots |
 | `make thresholds-x3z3` | `thresholds-all` for X³Z³; `thresholds-x3z3-medium` with more shots |
@@ -52,19 +53,26 @@ documented at the top of the [Makefile](Makefile).
 Example:
 
 ```bash
-make decode NOISE=HBD ETA=100 DISTANCES="3 5 7" SHOTS=100000
+make physical-to-logical NOISE=Spin ETA=100 DISTANCES="3 5 7" SHOTS=100000
 ```
 
 Output file names include their settings, so runs with different settings don't overwrite each other.
+
+Every run collects its data as CSV, one row per point appended as soon as it is computed (`memory.run_points`;
+`thresholds.py` per point of each scan). A run that crashes or is stopped picks up where it left off when the same
+command is run again, and `--plot-only` redraws from the CSV without simulating.
 
 ## Layout
 
 ```
 src/shared/           floquet.py (lattice, memory_circuit), noise.py (spin / HBD), memory.py (decoding),
-                      drawing.py (timeslice helpers): used by both schemes
+                      drawing.py (timeslice helpers), writing/results_csv.py (resumable result CSVs): used by
+                      every scheme and experiment
 src/two_ancillas/     pairs.py (step circuit), plots.py
 src/single_ancilla/   shared/ (layout.py: one-ancilla lattice, corner_readout.py: corner readout used by B and C),
-                      method_a|b|c/, decode.py, footprint.py, thresholds.py, x3z3.py (X³Z³ vs CSS sweep) + x3z3_plots.py
+                      method_a|b|c/
+src/experiments/      physical_to_logical.py (LER vs p, and SCHEMES), footprint.py, thresholds.py,
+                      x3z3_ler.py + x3z3_bias.py (X³Z³ vs CSS sweep)
 notebooks/            walkthroughs of each scheme, of the memory experiment and of the X³Z³ code
 results/              all generated output, laid out like src/
 docs/                 write-ups: floquet_rounds, decoding, spin_x3z3_readout, one_ancilla_review
