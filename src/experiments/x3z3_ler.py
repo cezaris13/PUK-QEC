@@ -71,10 +71,10 @@ def sweep(args, extra_ps: set[float] = frozenset()) -> list[dict]:
     """Every point of the grid `args` sets, plus `extra_ps`, in <args.out>.csv (args.out defaults from the
     settings); simulates nothing with --plot-only. The CSV's rows."""
     if args.out is None:
-        args.out = ROOT / "results" / "single_ancilla" / "x3z3" / (
+        args.out = ROOT / "results" / "x3z3" / (
             f"{args.noise}_d{'-'.join(map(str, args.distances))}_p{args.p_min:g}-{args.p_max:g}x{args.num}"
             f"_shots{args.shots}")
-    csv_path = args.out.with_suffix(".csv")
+    csv_path = Path(f"{args.out}.csv")
     if not args.plot_only:
         ps = sorted(set(np.geomspace(args.p_min, args.p_max, args.num).tolist()) | set(extra_ps))
         tasks = [dict(code=c, scheme=s, distance=d, eta=eta, p=p, basis=b, noise=args.noise, shots_max=args.shots,

@@ -127,7 +127,7 @@ export function BiasSection({ bias }: { bias: Record<string, BiasRow[]> }) {
   traces.push(...CODES.filter(c => combos.some(([x]) => x === c)).map(codeKey));
 
   const none = !paths.length && (
-    <span>No bias sweeps yet. <code>make x3z3-bias</code> writes one to <code>results/single_ancilla/x3z3/</code>.</span>
+    <span>No bias sweeps yet. <code>make x3z3-bias</code> writes one to <code>results/x3z3/</code>.</span>
   );
   const L = baseLayout(), text = css("--text-primary");
   const legendBox = (y: number, title: string) => ({ ...L.legend, x: 1.02, xanchor: "left", y, yanchor: "top",

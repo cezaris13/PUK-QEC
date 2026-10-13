@@ -2,7 +2,7 @@
 Each p is appended to the CSV as it finishes, and a rerun skips the p already there, so a cut-short run picks up
 where it stopped (writing.results_csv.run_points, which every result script here uses).
 
-    .venv/bin/python src/shared/memory.py --distance 3 --rounds 3 --noise spin --eta 10 --csv results/two_ancillas/spin_eta10_d3.csv
+    .venv/bin/python src/shared/memory.py --distance 3 --rounds 3 --noise spin --eta 10 --csv results/two_ancillas/pairs/spin_eta10_d3.csv
 
 Run as a script it sweeps the two-ancilla scheme (src/two_ancillas/pairs.py). The noiseless circuit comes from
 `floquet.memory_circuit`; `noise.add_noise` applies the model at every p.

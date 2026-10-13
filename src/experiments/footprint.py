@@ -2,7 +2,7 @@
 count, one line per scheme, extrapolated to a target logical error rate.
 
     .venv/bin/python src/experiments/footprint.py --p 1e-3 --distances 3 5 --shots 10000000 --target 1e-6 \
-        --schemes method_a method_b method_c --out results/single_ancilla/footprint
+        --schemes method_a method_b method_c
     .venv/bin/python src/experiments/footprint.py --codes css x3z3 --eta 1000   # X3Z3 vs CSS Floquet code
 
 Each point runs the Z and the X memory experiment (d rounds at distance d) at p, decoded by matching, and combines
@@ -48,26 +48,31 @@ def main() -> None:
     parser.add_argument("--shots", type=int, default=10_000_000, help="most shots per point")
     parser.add_argument("--max-errors", type=int, default=100, help="stop a point at this many logical errors")
     parser.add_argument("--target", type=float, default=1e-6, help="logical error rate to extrapolate to")
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/footprint"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--out", type=Path, help="writes <out>.csv and <out>.png; default named from the settings "
+                                                     "in results/footprint/")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
+    if args.out is None:  # named like the Makefile's files
+        args.out = Path("results/footprint") / (
+            f"{args.noise}_eta{args.eta:g}_p{args.p:g}_d{'-'.join(map(str, args.distances))}_shots{args.shots}"
+            f"_{'-'.join(args.schemes)}{'' if args.codes == ['css'] else '_' + '-'.join(args.codes)}_footprint")
 
     if args.plot_only:
-        rows = read_rows(args.out.with_suffix(".csv"))
+        rows = read_rows(Path(f"{args.out}.csv"))
     else:
         tasks = [dict(scheme=name, code=code, distance=d, basis=b, rounds=d, noise=args.noise, eta=args.eta, p=args.p,
                       shots_max=args.shots, max_errors=args.max_errors)
                  for code in args.codes for name in args.schemes for d in args.distances for b in "ZX"]
-        rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
+        rows = run_points(Path(f"{args.out}.csv"), tasks, _point, args.workers, sources=args.sources)
     rows = _combined(rows)
     for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
         fit = _qubits_needed([r for r in rows if (r["code"], r["scheme"]) == (code, name)], args.target)
         print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
                                          "no fit: under two distances with errors (more shots or larger p), or the "
                                          "LER rises with d (p above threshold: lower p)"))
-    _plot(rows, args.target, args.out.with_suffix(".png"))
+    _plot(rows, args.target, Path(f"{args.out}.png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 

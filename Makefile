@@ -101,9 +101,9 @@ SENSORS = 1
 # Derived names (not meant to be overridden)
 # ============================================================================================================
 
-# All output goes under results/, mirroring src/.
+# All output goes under results/: per-scheme results in two_ancillas/<scheme>/ and single_ancilla/<scheme>/,
+# experiments comparing schemes in physical_to_logical/, footprint/ and x3z3/.
 TWO = results/two_ancillas
-ONE = results/single_ancilla
 
 # $(call dashed,a b c) -> a-b-c: a list of words as one file-name part.
 empty :=
@@ -111,10 +111,10 @@ space := $(empty) $(empty)
 dashed = $(subst $(space),-,$(strip $(1)))
 
 RUN_NAME = $(NOISE)_eta$(ETA)_p$(P_MIN)-$(P_MAX)x$(NUM)_shots$(SHOTS)
-RUN = $(TWO)/$(RUN_NAME)
+RUN = $(TWO)/pairs/$(RUN_NAME)
 CSVS = $(foreach d,$(DISTANCES),$(RUN)_d$(d).csv)
-PHYSICAL_TO_LOGICAL = $(ONE)/$(RUN_NAME)_$(call dashed,$(SCHEMES))_physical_to_logical
-FOOTPRINT = $(ONE)/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))$(if $(filter-out css,$(FOOTPRINT_CODES)),_$(call dashed,$(FOOTPRINT_CODES)))_footprint
+PHYSICAL_TO_LOGICAL = results/physical_to_logical/$(RUN_NAME)_$(call dashed,$(SCHEMES))_physical_to_logical
+FOOTPRINT = results/footprint/$(NOISE)_eta$(ETA)_p$(P)_d$(call dashed,$(FOOTPRINT_DISTANCES))_shots$(FOOTPRINT_SHOTS)_$(call dashed,$(SCHEMES))$(if $(filter-out css,$(FOOTPRINT_CODES)),_$(call dashed,$(FOOTPRINT_CODES)))_footprint
 
 SHARED_SRC = src/shared/floquet.py src/shared/noise.py src/shared/memory.py
 TWO_SRC = $(SHARED_SRC) src/two_ancillas/pairs.py
@@ -190,22 +190,23 @@ $(RUN)_ler.png: $(CSVS) src/shared/drawing.py src/two_ancillas/plots.py
 # DISTANCES, colour = distance, line style = scheme.
 physical-to-logical: $(PHYSICAL_TO_LOGICAL).png
 
-$(DECODE).png: src/single_ancilla/decode.py $(ONE_SRC)
-	$(PY) src/single_ancilla/decode.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(DECODE)
+$(PHYSICAL_TO_LOGICAL).png: src/experiments/physical_to_logical.py $(ONE_SRC)
+	$(PY) src/experiments/physical_to_logical.py --schemes $(SCHEMES) --distances $(DISTANCES) --noise $(NOISE) --eta $(ETA) \
+		--shots $(SHOTS) --p-min $(P_MIN) --p-max $(P_MAX) --num $(NUM) --out $(PHYSICAL_TO_LOGICAL)
 
 # LER vs physical qubits at P for each of SCHEMES, and the qubits each needs for LER TARGET.
 footprint: $(FOOTPRINT).png
 
-$(FOOTPRINT).png: src/single_ancilla/footprint.py src/single_ancilla/decode.py $(ONE_SRC)
-	$(PY) src/single_ancilla/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
+$(FOOTPRINT).png: src/experiments/footprint.py src/experiments/physical_to_logical.py $(ONE_SRC)
+	$(PY) src/experiments/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
 		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
-# bias-blind decoder. Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<SCHEME>/thresholds/.
+# bias-blind decoder. Writes results/two_ancillas/<SCHEME>/thresholds/<CODE>/ (pairs, pairs_bell) or
+# results/single_ancilla/<SCHEME>/thresholds/<CODE>/.
 # Phony: the script names the files from its settings.
 thresholds:
-	$(PY) src/single_ancilla/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
+	$(PY) src/experiments/thresholds.py --scheme $(SCHEME) --code $(CODE) --distances $(THRESHOLD_DISTANCES) --nphi $(NPHI) --nbias $(NBIAS) \
 		--num-p $(NUM_P) --bias-num-p $(BIAS_NUM_P) --shots $(THRESHOLD_SHOTS) --batch $(THRESHOLD_BATCH) --max-fail $(MAX_FAIL) $(if $(BIAS_ONLY),--bias-only)
 
 # thresholds for every scheme in SCHEMES, one after the other; stops at the first that fails.
@@ -229,12 +230,12 @@ thresholds-paper:
 	$(MAKE) thresholds-all NPHI=20 NBIAS=25 NUM_P=30 BIAS_NUM_P=60 THRESHOLD_SHOTS=300000 THRESHOLD_BATCH=3000 MAX_FAIL=30000
 
 # X3Z3 (Setiawan & McLauchlan, arXiv:2411.04974) against the CSS Floquet code for every scheme in SCHEMES. Both
-# share one sweep, results/single_ancilla/x3z3/<settings>.csv, each reusing the other's points: x3z3-bias writes
+# share one sweep, results/x3z3/<settings>.csv, each reusing the other's points: x3z3-bias writes
 # <settings>_bias.png (threshold and LER at P vs eta), x3z3-ler <settings>_ler_eta<eta>.png per eta. For LER vs
 # qubits: make footprint FOOTPRINT_CODES="css x3z3". Phony: the scripts name their files and resume from the CSV.
 X3Z3_ARGS = --schemes $(SCHEMES) --noise $(NOISE) --distances $(X3Z3_DISTANCES) --etas $(X3Z3_ETAS) \
 	--p-min $(X3Z3_P_MIN) --p-max $(X3Z3_P_MAX) --num $(X3Z3_NUM) --shots $(SHOTS) \
-	--out $(ONE)/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
+	--out results/x3z3/$(NOISE)_d$(call dashed,$(X3Z3_DISTANCES))_shots$(SHOTS)_$(call dashed,$(SCHEMES))
 
 # One after the other: x3z3-bias simulates the shared CSV, then x3z3-ler finds every point there.
 x3z3:

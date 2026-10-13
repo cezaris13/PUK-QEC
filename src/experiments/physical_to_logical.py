@@ -88,14 +88,19 @@ def main() -> None:
     parser.add_argument("--num", type=int, default=9, help="p values, log-spaced")
     parser.add_argument("--shots", type=int, default=10_000, help="most shots per point")
     parser.add_argument("--max-errors", type=int, help="stop a point at this many logical errors")
-    parser.add_argument("--out", type=Path, default=Path("results/single_ancilla/physical_to_logical"), help="writes <out>.csv and <out>.png")
+    parser.add_argument("--out", type=Path, help="writes <out>.csv and <out>.png; default named from the settings "
+                                                     "in results/physical_to_logical/")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
     parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
+    if args.out is None:  # named like the Makefile's files
+        args.out = Path("results/physical_to_logical") / (
+            f"{args.noise}_eta{args.eta:g}_p{args.p_min:g}-{args.p_max:g}x{args.num}_shots{args.shots}"
+            f"_{'-'.join(args.schemes)}_physical_to_logical")
 
     if args.plot_only:
-        _plot(read_rows(args.out.with_suffix(".csv")), args.out.with_suffix(".png"))
+        _plot(read_rows(Path(f"{args.out}.csv")), Path(f"{args.out}.png"))
         return
 
     for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
@@ -105,8 +110,8 @@ def main() -> None:
                   # only when set, so CSVs written without it still resume
                   **({"max_errors": args.max_errors} if args.max_errors else {}))
              for name in args.schemes for d in args.distances for p in np.geomspace(args.p_min, args.p_max, args.num)]
-    rows = run_points(args.out.with_suffix(".csv"), tasks, _point, args.workers, sources=args.sources)
-    _plot(rows, args.out.with_suffix(".png"))
+    rows = run_points(Path(f"{args.out}.csv"), tasks, _point, args.workers, sources=args.sources)
+    _plot(rows, Path(f"{args.out}.png"))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 

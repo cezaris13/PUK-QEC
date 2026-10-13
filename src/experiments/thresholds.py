@@ -29,7 +29,7 @@ never relaxation-like X errors. Where the curves don't cross inside the scanned 
 towards the threshold, up to --retries times. Without --pg/--pt/--pr the axis thresholds that aim the grid come
 from a coarse scan first.
 
-Writes results/two_ancillas/thresholds/ (pairs) or results/single_ancilla/<scheme>/thresholds/: <name>.csv with
+Writes results/two_ancillas/<scheme>/thresholds/<code>/ (pairs, pairs_bell) or results/single_ancilla/<scheme>/thresholds/<code>/: <name>.csv with
 every simulated point, one row per (direction, basis, distance, p) appended as soon as it is done, and
 <name>.png, and <name>_thresholds.csv, one row per direction with its threshold (what the viewer behind
 `make serve` reads; derived, like the PNG). Each scan reads its points from the CSV before simulating any, so rerunning the same command after a crash
@@ -123,8 +123,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.out is None:
-        folder = (ROOT / "results" / "two_ancillas" if args.scheme.startswith("pairs")
-                  else ROOT / "results" / "single_ancilla" / args.scheme) / "thresholds"
+        folder = ROOT / "results" / ("two_ancillas" if args.scheme.startswith("pairs") else "single_ancilla") \
+            / args.scheme / "thresholds" / args.code
         args.out = folder / (("" if args.code == "css" else f"{args.code}_") + f"{args.scheme}_d{'-'.join(map(str, args.distances))}_{args.decoder}"
                              f"_etaG{args.eta_g:g}_etaT{args.eta_t:g}_shots{args.shots}_nphi{args.nphi}")
     # not with_suffix: a name like ..._etaG0.5_... has a dot of its own
