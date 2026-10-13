@@ -85,6 +85,7 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
           </select>
         </div>
       </div>
+      <div className="row"><div>
       <Plot tall msg={none}
         data={picked.length ? picked.flatMap(([k, p]) => surfaceTraces(p, surf[p], k)) : EMPTY_3D}
         layout={{ ...baseLayout(), margin: { l: 0, r: 0, t: 0, b: 0 },
@@ -98,9 +99,10 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
         Each dot is one direction's crossing point p<sub>th</sub>·(cos θ cos φ, cos θ sin φ, sin θ): gate, idling
         and readout error at threshold. Each run, surface and dots, is shaded by its length p<sub>th</sub>:
         run A copper (as in arXiv:2306.17786 and thresholds.py), run B black to its series colour (diamonds). The bars on the p<sub>G</sub> and p<sub>T</sub> axes span the
-        thresholds of the bias sweep below.
+        thresholds of the bias sweep on the right.
       </p>
-      <Plot msg={none && "Threshold vs bias appears with the first threshold run."}
+      </div><div>
+      <Plot tall msg={none && "Threshold vs bias appears with the first threshold run."}
         data={picked.flatMap(([k, p]) => biasTraces(p, surf[p], k))}
         layout={{ ...baseLayout(),
           shapes: picked.flatMap(([, p]) => ([[surf[p].settings.eta_g, G_COLOR], [surf[p].settings.eta_t, T_COLOR]] as const)
@@ -112,6 +114,7 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
         Threshold along pure gate noise against η<sub>G</sub> (2-qubit / 1-qubit gate error) and along pure idling
         against η<sub>T</sub> (dephasing / relaxation). Dotted rules mark the η the surface used.
       </p>
+      </div></div>
       <div className="scroll"><table><tbody>
         <tr><th>Run</th><th>Scheme</th><th>d</th><th>Decoder</th><th>η<sub>G</sub></th><th>η<sub>T</sub></th>
           <th>p<sub>G</sub><sup>th</sup></th><th>p<sub>T</sub><sup>th</sup></th><th>p<sub>R</sub><sup>th</sup></th>

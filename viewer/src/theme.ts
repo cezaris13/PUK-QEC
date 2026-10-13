@@ -32,10 +32,12 @@ export const axis = (title: string, extra: object = {}) => ({
   color: css("--text-secondary"), ...extra,
 });
 
-// Ordered ramp over code distance; dark mode gets its own lighter steps rather than a flip.
-const DIST_COLORS = ["#7fc97f", "#1a9850", "#74add1", "#2166ac", "#f4a582", "#d73027"];
-const DIST_COLORS_DARK = ["#a3d9a3", "#4fb05a", "#8ec6e8", "#5e9fd6", "#f5b79c", "#e46b63"];
-export const distColor = (d: number) => (isDark() ? DIST_COLORS_DARK : DIST_COLORS)[((d - 3) % 6 + 6) % 6];
+// One saturated hue per odd code distance 3, 5, 7, ...; dark mode gets brighter versions rather than a flip.
+// ponytail: an even d shares the colour of d - 1; give evens their own steps if even distances ever get run
+const DIST_COLORS = ["#1a9850", "#2166ac", "#d73027", "#8e44ad", "#e08214", "#01665e"];
+const DIST_COLORS_DARK = ["#3ddc6a", "#4ea8ff", "#ff5a4e", "#c77dff", "#ffa630", "#2ed3c0"];
+export const distColor = (d: number) =>
+  (isDark() ? DIST_COLORS_DARK : DIST_COLORS)[((Math.floor((d - 3) / 2) % 6) + 6) % 6];
 
 export const DASH = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"];
 export const MARK = ["circle", "square", "diamond", "triangle-up", "x", "star"];

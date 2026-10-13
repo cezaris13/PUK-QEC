@@ -24,6 +24,8 @@ body {
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (max-width: 600px) { body { padding: 16px 16px 40px; } }
+/* One centred column on wide monitors: controls, plots, notes and tables share its edges. */
+#root { max-width: 1920px; margin: 0 auto; }
 .hdr { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .theme {
   flex: none; font: inherit; font-size: 13px; cursor: pointer;
@@ -51,6 +53,11 @@ select {
 .plot.small { height: 440px; }
 .row { display: flex; flex-wrap: wrap; gap: 24px; }
 .row > * { flex: 1 1 420px; min-width: 0; }
+/* Caps for wide monitors, from a 1920px screen: a plot alone 75% of it, two in a row 50% each. */
+.holder { max-width: 1440px; margin: 0 auto; }
+.row { justify-content: center; }
+.row > * { max-width: 960px; }
+.row .holder { max-width: none; }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 14px 6px 0; border-bottom: 1px solid var(--border); }

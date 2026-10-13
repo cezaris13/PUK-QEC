@@ -16,15 +16,17 @@ export function LerSection({ ler }: { ler: Series[] }) {
   };
 
   const traces: Trace[] = ler.flatMap((s, k) => off.has(s.key) ? [] :
-    Object.entries(byDistance(s.rows)).map(([d, rows]) => ({
+    Object.entries(byDistance(s.rows)).map(([d, all]) => {
+      const rows = all.filter(r => r.ler > 0);  // dropped, not nulled: a null y still stretches the x axis to its p
+      return {
       type: "scatter", mode: "lines+markers", name: `${s.label} · d=${d}`,
-      x: rows.map(r => r.p), y: rows.map(r => r.ler > 0 ? r.ler : null),
+      x: rows.map(r => r.p), y: rows.map(r => r.ler),
       error_y: { type: "data", array: rows.map(binomSE), visible: true,
                  color: distColor(+d), thickness: 1, width: 3 },
       line: { color: distColor(+d), width: 2, dash: DASH[k % DASH.length] },
       marker: { size: 6, color: distColor(+d), symbol: MARK[k % MARK.length] },
       hovertemplate: `p %{x:.2e}<br>LER %{y:.3g}<extra>${s.label} d=${d}</extra>`,
-    })));
+    }; }));
 
   return (
     <>
