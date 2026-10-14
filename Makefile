@@ -16,6 +16,7 @@
 #   x3z3        x3z3-bias and x3z3-ler: X3Z3 vs CSS Floquet code for every scheme
 #   x3z3-bias   threshold and LER vs bias
 #   x3z3-ler    LER vs p per bias
+#   ler-etas    LER vs p per bias for LER_SCHEMES, both codes, Z and X memory combined, one plot per eta
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -89,6 +90,20 @@ X3Z3_ETAS = 0.5 1 3 10 30 100 1000
 X3Z3_P_MIN = 2e-4
 X3Z3_P_MAX = 1.5e-2
 X3Z3_NUM = 12
+
+# --- LER vs p per bias (ler-etas) ---------------------------------------------------------------------------
+# physical_to_logical.py once per eta in LER_ETAS: LER_SCHEMES under each of LER_CODES, Z and X memory combined
+# (p_L = 1 - (1 - p_Z)(1 - p_X)). Each point runs up to LER_SHOTS shots per basis, stopping at LER_MAX_ERRORS
+# logical errors; points with none are drawn as their 95% upper bound.
+LER_SCHEMES = method_b
+LER_CODES = css x3z3
+LER_DISTANCES = 3 5 7
+LER_ETAS = 0.5 1 10 100 1000
+LER_P_MIN = 3e-4
+LER_P_MAX = 1e-2
+LER_NUM = 7
+LER_SHOTS = 100000000
+LER_MAX_ERRORS = 1000
 
 # --- Drawings -----------------------------------------------------------------------------------------------
 # Lattice size: 12*d^2 data qubits plus 2 spin ancillas on each of the 18*d^2 edges, so 1 is 12 + 36 qubits
@@ -248,6 +263,18 @@ x3z3-bias:
 x3z3-ler:
 	$(PY) src/experiments/x3z3_ler.py $(X3Z3_ARGS)
 
+# One CSV and plot per eta in results/physical_to_logical/<schemes>/. Phony: each run resumes from its CSV.
+LER_DIR = results/physical_to_logical/$(call dashed,$(LER_SCHEMES))
+ler-etas:
+	for eta in $(LER_ETAS); do \
+		$(PY) src/experiments/physical_to_logical.py --schemes $(LER_SCHEMES) --codes $(LER_CODES) \
+			--distances $(LER_DISTANCES) --noise $(NOISE) --eta $$eta \
+			--p-min $(LER_P_MIN) --p-max $(LER_P_MAX) --num $(LER_NUM) \
+			--shots $(LER_SHOTS) --max-errors $(LER_MAX_ERRORS) \
+			--out $(LER_DIR)/$(NOISE)_eta$${eta}_d$(call dashed,$(LER_DISTANCES))_shots$(LER_SHOTS)_$(call dashed,$(LER_CODES)) \
+			|| exit 1; \
+	done
+
 # ============================================================================================================
 # Viewer and housekeeping
 # ============================================================================================================
@@ -264,4 +291,4 @@ clean:
 
 .DELETE_ON_ERROR:
 
-.PHONY: venv paths drawings plots physical-to-logical footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 x3z3-bias x3z3-ler docs serve clean
+.PHONY: venv paths drawings plots physical-to-logical footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 x3z3-bias x3z3-ler ler-etas docs serve clean

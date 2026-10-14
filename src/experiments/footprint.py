@@ -13,8 +13,7 @@ the d where it reaches --target; the qubit count there is the scheme's qubits pe
 errors are left out: at low p the largest distances need a lot of shots to show any.
 
 Plotted on square-root-log axes (as the N2E3N2 paper's Figure 5a), where each fit is a straight line since the
-qubit count grows as d^2; its slope is how fast the scheme suppresses errors, given as
-Lambda = LER(d) / LER(d + 2). Each point is appended to <out>.csv as it finishes (writing.results_csv.run_points),
+qubit count grows as d^2; its slope is how fast the scheme suppresses errors. Each point is appended to <out>.csv as it finishes (writing.results_csv.run_points),
 so a rerun picks up where a run stopped; --plot-only redraws the PNG from <out>.csv. With more than one of
 --codes, X3Z3 markers are filled and CSS ones hollow, one fit per (code, scheme). --sources warns if that code
 changed since <out>.csv was written.
@@ -33,7 +32,7 @@ from matplotlib.ticker import MaxNLocator
 from floquet import CODES, memory_circuit
 from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
-from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson, legend_blocks
+from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, combined
 from writing.results_csv import read_rows, run_points
 
 
@@ -66,7 +65,7 @@ def main() -> None:
                       shots_max=args.shots, max_errors=args.max_errors)
                  for code in args.codes for name in args.schemes for d in args.distances for b in "ZX"]
         rows = run_points(Path(f"{args.out}.csv"), tasks, _point, args.workers, sources=args.sources)
-    rows = _combined(rows)
+    rows = combined(rows)
     for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
         fit = _qubits_needed([r for r in rows if (r["code"], r["scheme"]) == (code, name)], args.target)
         print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
@@ -91,24 +90,6 @@ def _point(task: dict) -> dict:
     return dict(task, qubits=c.num_qubits, shots=ran, errors=errors, ler=errors / ran)
 
 
-def _combined(rows: list[dict]) -> list[dict]:
-    """One row per (code, scheme, distance) with both bases: ler = 1 - (1 - p_Z)(1 - p_X), and lo / hi its 95%
-    Clopper-Pearson interval, each basis's ends combined the same way (x3z3_ler.combined)."""
-    either = lambda a, b: 1 - (1 - a) * (1 - b)
-    by = {}
-    for r in rows:
-        by.setdefault((r["code"], r["scheme"], r["distance"]), {})[r["basis"]] = r
-    out = []
-    for bases in by.values():
-        if set(bases) != {"Z", "X"}:
-            continue
-        z, x = bases["Z"], bases["X"]
-        (z_lo, z_hi), (x_lo, x_hi) = clopper_pearson(z["errors"], z["shots"]), clopper_pearson(x["errors"], x["shots"])
-        out.append(dict(z, basis="ZX", errors=z["errors"] + x["errors"], ler=either(z["ler"], x["ler"]),
-                        lo=either(z_lo, x_lo), hi=either(z_hi, x_hi)))
-    return out
-
-
 def _qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float] | None:
     """(slope, intercept, qubits) of the fit log(LER) = intercept + slope * d for one (code, scheme)'s rows, with the
     qubit count where it crosses `target`; None without two distances that saw errors, or if the LER doesn't
@@ -127,13 +108,13 @@ def _qubits_needed(rows: list[dict], target: float) -> tuple[float, float, float
 def _plot(rows: list[dict], target: float, png: Path) -> None:
     """LER vs qubits on square-root-log axes, where each scheme's fit is a straight line: points coloured by
     distance with 95% Clopper-Pearson bars, marker = scheme, grey fit in the scheme's line style out to the
-    target (star), labelled with the qubits needed and Lambda = LER(d) / LER(d + 2)."""
+    target (star), labelled with the qubits needed."""
     fig, ax = plt.subplots(figsize=(9.2, 5.2))
     fig.subplots_adjust(left=0.10, right=0.70)
-    schemes = list(dict.fromkeys(r["scheme"] for r in rows))
-    codes = list(dict.fromkeys(r["code"] for r in rows))
+    schemes = [n for n in SCHEMES if any(r["scheme"] == n for r in rows)]  # fixed order, not the CSV's
+    codes = [c for c in CODES if any(r["code"] == c for r in rows)]
     fits = []
-    for code, name in dict.fromkeys((r["code"], r["scheme"]) for r in rows):
+    for code, name in ((c, n) for c in codes for n in schemes if any((r["code"], r["scheme"]) == (c, n) for r in rows)):
         mine = [r for r in rows if (r["code"], r["scheme"]) == (code, name)]
         ls, marker = STYLES[name]
         hollow = len(codes) > 1 and code == "css"
@@ -153,7 +134,7 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
             ax.plot(needed, target, marker="*", color=grey, ms=9)
             label = f"{code}, {name}" if len(codes) > 1 else name
             fits.append(Line2D([], [], ls=ls, color=grey,
-                               label=f"{label}: {needed:,.0f} qubits, Λ = {math.exp(-2 * slope):.1f}"))
+                               label=f"{label}: {needed:,.0f} qubits"))
     ax.axhline(target, color="0.5", ls=":", lw=1)
     ax.set_xscale("function", functions=(np.sqrt, np.square))
     # autoscale's margin can push the left edge below 0, where sqrt is NaN and the whole axis vanishes
@@ -164,13 +145,26 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
     ax.set_title(f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}, p = {rows[0]['p']:g};"
                  f" dotted: target {target:g}", fontsize=10)
     ax.grid(which="both", alpha=0.3, lw=0.5)
-    legend_blocks(ax, schemes, sorted({r["distance"] for r in rows}), lines=False)
-    if fits:  # none when every (code, scheme) is above threshold
-        second = ax.get_legend()
-        ax.legend(handles=fits, title="Linefits", fontsize=7, title_fontsize=8, loc="upper left",
-                  bbox_to_anchor=(1.02, 0.2), frameon=False)
-        ax.add_artist(second)
-    fig.savefig(png, dpi=200)
+    # one stacked legend, a bold header row per block: compact, and the tight crop sees all of it
+    blocks = [("Schemes", [Line2D([], [], marker=STYLES[n][1], ls="none", color="0.3", label=n) for n in schemes]),
+              ("Distances", [Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(d))
+                             for d in sorted({r["distance"] for r in rows})]),
+              ("Codes", [Line2D([], [], marker="o", color="0.3", ls="none", label="X3Z3 (filled, dark fit)"),
+                         Line2D([], [], marker="o", mfc="white", color="0.3", ls="none",
+                                label="CSS (hollow, light fit)")] if len(codes) > 1 else []),
+              ("Linefits", fits)]
+    handles, headers = [], []
+    for title, hs in blocks:
+        if hs:
+            if handles:  # a blank row between blocks
+                handles.append(Line2D([], [], ls="none", label=" "))
+            headers.append(len(handles))
+            handles += [Line2D([], [], ls="none", label=title)] + hs
+    legend = ax.legend(handles=handles, fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False,
+                       labelspacing=0.5, handlelength=2.5)
+    for i in headers:
+        legend.get_texts()[i].set_fontweight("bold")
+    fig.savefig(png, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
