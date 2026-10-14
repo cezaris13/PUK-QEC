@@ -4,6 +4,7 @@ Memory experiments for the Floquet honeycomb code, with readout through spin anc
 several readout schemes:
 
 - **pairs**: a syndrome and a reference ancilla on every edge (`src/two_ancillas/`)
+- **pairs_bell**: pairs, but each ancilla pair starts as a Bell pair instead of being SWAPped
 - **method_a / method_b / method_c**: one ancilla per edge, read out at a corner of a hex, following
   hexes.pdf (`src/single_ancilla/method_*/`)
 
@@ -39,7 +40,8 @@ documented at the top of the [Makefile](Makefile).
 
 | Target | What it makes |
 |---|---|
-| `make physical-to-logical` | LER vs p for every scheme in `SCHEMES` (default: all four), in one CSV and one plot |
+| `make physical-to-logical` | LER vs p for every scheme in `SCHEMES`, in one CSV and one plot |
+| `make ler-etas` | LER vs p for `LER_SCHEMES` (default method_b) under both codes, one CSV and plot per η in `LER_ETAS`, in `results/physical_to_logical/<scheme>/` |
 | `make plots` | LER vs p for the pairs scheme only, one CSV per distance |
 | `make footprint` | LER vs physical qubit count at one `P`, extrapolated to `TARGET`; `FOOTPRINT_CODES="css x3z3"` compares the codes |
 | `make x3z3` | X³Z³ vs CSS Floquet code for every scheme under `NOISE`: `x3z3-bias` (threshold and LER vs η) and `x3z3-ler` (LER vs p) |
@@ -53,14 +55,21 @@ documented at the top of the [Makefile](Makefile).
 Example:
 
 ```bash
-make physical-to-logical NOISE=Spin ETA=100 DISTANCES="3 5 7" SHOTS=100000
+make physical-to-logical NOISE=spin ETA=100 DISTANCES="3 5 7" SHOTS=100000
+make ler-etas LER_ETAS="10 100" LER_SHOTS=20000000
 ```
 
 Output file names include their settings, so runs with different settings don't overwrite each other.
 
-Every run collects its data as CSV, one row per point appended as soon as it is computed (`memory.run_points`;
+Every run collects its data as CSV, one row per point appended as soon as it is computed (`writing.results_csv.run_points`;
 `thresholds.py` per point of each scan). A run that crashes or is stopped picks up where it left off when the same
 command is run again, and `--plot-only` redraws from the CSV without simulating.
+
+With both codes (`physical_to_logical.py --codes css x3z3`, `footprint.py`, the x3z3 sweep) every point runs the Z and
+the X memory, and the plots show p_L = 1 - (1 - p_Z)(1 - p_X): either logical failing. A Z memory alone barely sees
+Z-biased noise on the CSS code, so it would make CSS look far better than it is. In these plots X³Z³ markers are
+filled and CSS ones hollow. A point with no logical errors is drawn as its 95% upper bound with an arrow down.
+`--max-errors` stops a point early once it has that many logical errors, so high-p points don't use all the shots.
 
 ## Layout
 
