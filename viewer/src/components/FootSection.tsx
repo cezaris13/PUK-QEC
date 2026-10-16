@@ -4,15 +4,15 @@ import { axis, baseLayout, css, distColor } from "../theme";
 import { Plot, type Trace } from "./Plot";
 
 // footprint.py's STYLES: line dash and marker per scheme
-const STYLE: Record<string, [string, string]> = {
+export const STYLE: Record<string, [string, string]> = {
   pairs: ["solid", "circle"], method_a: ["dash", "diamond"], method_b: ["dashdot", "triangle-up"],
   method_c: ["dot", "triangle-down"], pairs_bell: ["longdashdot", "square"],
 };
-const style = (s: string) => STYLE[s] ?? ["solid", "circle"];
+export const style = (s: string) => STYLE[s] ?? ["solid", "circle"];
 
-type FootRow = Row & { code?: string; basis?: string };
-type Point = { code: string; scheme: string; distance: number; qubits: number; errors: number;
-               ler: number; lo: number; hi: number };
+export type FootRow = Row & { code?: string; basis?: string };
+export type Point = { code: string; scheme: string; basis: string; distance: number; p: number; qubits: number;
+                      errors: number; ler: number; lo: number; hi: number };
 
 // ponytail: Wilson 95% interval, close to footprint.py's Clopper-Pearson without a beta quantile in JS
 function wilson(k: number, n: number): [number, number] {
@@ -21,20 +21,24 @@ function wilson(k: number, n: number): [number, number] {
   return [Math.max(0, mid - half), mid + half];
 }
 
-/** footprint.py's _combined: one point per (code, scheme, d), LER = 1 - (1 - p_Z)(1 - p_X). Older CSVs with no
- *  basis column are one point per row already. */
-function combined(rows: FootRow[]): Point[] {
+/** footprint.py's _combined: one point per (code, scheme, d, p), LER = 1 - (1 - p_Z)(1 - p_X). Older CSVs with no
+ *  basis column are one point per row already. With combine off, every row is its own point. */
+export function combined(rows: FootRow[], combine = true): Point[] {
   const either = (a: number, b: number) => 1 - (1 - a) * (1 - b);
+  const point = (parts: FootRow[], basis: string): Point => {
+    const ivs = parts.map(r => wilson(r.errors, r.shots)), r0 = parts[0];
+    return { code: r0.code ?? "css", scheme: r0.scheme ?? "pairs", basis, distance: r0.distance, p: r0.p,
+             qubits: r0.qubits!, errors: parts.reduce((s, r) => s + r.errors, 0),
+             ler: parts.map(r => r.ler).reduce(either, 0),
+             lo: ivs.map(i => i[0]).reduce(either, 0), hi: ivs.map(i => i[1]).reduce(either, 0) };
+  };
+  if (!combine) return rows.map(r => point([r], r.basis ?? "Z"));
   const by: Record<string, FootRow[]> = {};
-  rows.forEach(r => (by[`${r.code ?? "css"}|${r.scheme}|${r.distance}`] ??= []).push(r));
+  rows.forEach(r => (by[`${r.code ?? "css"}|${r.scheme}|${r.distance}|${r.p}`] ??= []).push(r));
   return Object.values(by).flatMap(g => {
     const z = g.find(r => r.basis === "Z"), x = g.find(r => r.basis === "X");
-    const parts = z && x ? [z, x] : g[0].basis ? [] : [g[0]];
-    if (!parts.length) return [];
-    const ivs = parts.map(r => wilson(r.errors, r.shots));
-    return [{ code: g[0].code ?? "css", scheme: g[0].scheme!, distance: g[0].distance, qubits: g[0].qubits!,
-              errors: parts.reduce((s, r) => s + r.errors, 0), ler: parts.map(r => r.ler).reduce(either, 0),
-              lo: ivs.map(i => i[0]).reduce(either, 0), hi: ivs.map(i => i[1]).reduce(either, 0) }];
+    if (z && x) return [point([z, x], "Z or X")];
+    return g[0].basis ? [] : [point([g[0]], "Z")];
   });
 }
 

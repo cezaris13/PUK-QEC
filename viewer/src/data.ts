@@ -8,6 +8,8 @@ export const PCT = 100;
  *  only in footprint.py's. */
 export interface Row {
   scheme?: string;
+  code?: string;
+  basis?: string;
   qubits?: number;
   distance: number;
   rounds: number;
@@ -19,12 +21,10 @@ export interface Row {
   ler: number;
 }
 
-/** One scheme's LER curves from one run, every distance. */
+/** One run's LER rows: every scheme, code, basis and distance in it. */
 export interface Series {
   key: string;
   label: string;
-  scheme: string;
-  run: string;
   rows: Row[];
 }
 
@@ -109,12 +109,8 @@ export async function loadAll(): Promise<Results> {
     if ("qubits" in rows[0]) { foot[f] = rows; return; }
     // shared/memory.py writes one file per distance and no scheme column
     const run = f.replace(/_d\d+\.csv$/, "").replace(/\.csv$/, "");
-    for (const r of rows) {
-      const scheme = r.scheme || "pairs";
-      const key = run + "|" + scheme + (r.scheme ? "" : "|memory.py");
-      (groups[key] ??= { key, run, scheme, rows: [],
-        label: `${schemeName(scheme)} · ${base(run)}` + (r.scheme ? "" : " (memory.py)") }).rows.push(r);
-    }
+    const memory = rows[0].scheme ? "" : " (memory.py)";
+    (groups[run] ??= { key: run, label: base(run) + memory, rows: [] }).rows.push(...rows);
   });
   return { ler: Object.values(groups).sort((a, b) => a.label.localeCompare(b.label)), foot, surf, bias };
 }
