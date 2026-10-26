@@ -58,7 +58,8 @@ from scipy.interpolate import griddata
 from tqdm import tqdm
 
 from physical_to_logical import SCHEMES
-from floquet import CODES, memory_circuit
+import floquet
+from floquet import CODES, code_distance_png, code_memory_circuit, distance_label, even_distance
 from memory import logical_errors, uniform_matcher
 from noise import add_noise, spin_qubit_noise_model
 from writing.results_csv import append_row, point_key, read_rows, warn_stale, write_rows
@@ -94,7 +95,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scheme", choices=SCHEMES, default="pairs")
     parser.add_argument("--code", choices=CODES, default="css", help="css, or x3z3: the X3Z3 Floquet code")
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--distances", type=even_distance, nargs="+", default=[6, 10],
+                        help="code distances (even); each runs d rounds")
     parser.add_argument("--decoder", choices=["uniform", "dem"], default="uniform",
                         help="uniform: IBM's bias-blind weights (default); dem: weights from the exact noise")
     parser.add_argument("--eta-g", type=float, default=1.0, help="2-qubit / 1-qubit gate error, for (b)")
@@ -115,6 +117,13 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=3, help="window moves when the curves don't cross")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--out", type=Path, help="writes <out>.csv (every point), <out>_thresholds.csv and <out>.png")
+    parser.add_argument("--code-distance", action="store_true",
+                        help="for CSVs from before --distances meant the code distance (they record L): label 2L, into new "
+                             "files named with it (floquet.code_distance)")
+    parser.add_argument("--partial", action="store_true",
+                        help="with --plot-only: leave out directions whose points aren't all in the CSV yet (a run "
+                             "still going), into <out>_partial.png and <out>_partial_thresholds.csv (for the "
+                             "viewer); the run's own summary is left alone")
     parser.add_argument("--plot-only", action="store_true",
                         help="redraw <out>.png from <out>.csv, simulating nothing (or from <out>_thresholds.csv)")
     parser.add_argument("--bias-only", action="store_true",
@@ -160,6 +169,10 @@ def main() -> None:
         _write_summary(data, summary)
     for key, name in (("g_bias", "eta_g"), ("t_bias", "eta_t")):
         print(f"{key}: " + ", ".join(f"{r[name]:g}: {100 * r['p_th']:.2f}%" for r in data[key]))
+    floquet.LABEL_CODE_DISTANCE = args.code_distance
+    if args.partial:  # its own summary, so the viewer lists the unfinished run beside the finished ones
+        _write_summary(data, summary.with_name(summary.name.replace("_thresholds.csv", "_partial_thresholds.csv")))
+    png = code_distance_png(png.with_name(png.stem + "_partial.png") if args.partial else png)
     _plot(data, png)
     print(f"wrote {csv_path}, {summary}, {png}")
 
@@ -176,7 +189,7 @@ def _noise_at(p: float, theta: float, phi: float, eta_g: float, eta_t: float):
 @lru_cache(maxsize=None)
 def _circuit_and_matcher(scheme: str, distance: int, decoder: str, basis: str, code: str = "css"):
     """The noiseless memory circuit (d rounds) and, for the uniform decoder, its fixed matcher: once per worker."""
-    circuit = memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
+    circuit = code_memory_circuit(distance, SCHEMES[scheme], basis, code)
     return circuit, uniform_matcher(circuit) if decoder == "uniform" else None
 
 
@@ -205,6 +218,8 @@ def _log_fail(task: dict) -> list:
             row = _done.get(point_key(point, POINT))
             if row is None:
                 if task.get("cache_only"):
+                    if task.get("partial"):
+                        raise _Unfinished
                     raise KeyError(f"{point} is not in {_csv}: run without --plot-only")
                 circuit, matcher = _circuit_and_matcher(task["scheme"], d, task["decoder"], task["basis"], task["code"])
                 noisy = add_noise(circuit, _noise_at(p, task["theta"], task["phi"], task["eta_g"], task["eta_t"]))
@@ -248,14 +263,21 @@ def _threshold_from_log_fail(log_fail_d_p: list, min_ler: float = 0.0, cutoff: f
     return p_th, max(p_th - lo, hi - p_th)
 
 
-def _scan(task: dict) -> list:
+class _Unfinished(Exception):
+    """A --partial replay reached a point the running scan hasn't simulated yet."""
+
+
+def _scan(task: dict) -> list | None:
     """`_log_fail`, and if the distances don't cross, again with the window moved 2.5x towards the threshold:
     down if the smallest distance already fails often at the lowest p, up otherwise; up to task["retries"]
     times. Error rates above 0.3 are dropped (some channels would go past probability 1)."""
     errors = task["errors"]
     for _ in range(task["retries"] + 1):
         errors = [p for p in errors if p <= 0.3]
-        lf = _log_fail(dict(task, errors=errors))
+        try:
+            lf = _log_fail(dict(task, errors=errors))
+        except _Unfinished:
+            return None  # this direction isn't done yet: no threshold
         if not errors or _threshold_from_log_fail(lf, MIN_ERRORS / task["shots"])[0] > 0:
             break
         factor = 1 / 2.5 if lf[0][1][0][1] >= 0.1 else 2.5
@@ -264,7 +286,10 @@ def _scan(task: dict) -> list:
 
 
 def _combine(lf_z: list, lf_x: list, min_ler: float) -> dict:
-    """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's."""
+    """The lower of the Z and X memories' thresholds (one alone if the other found none), as IBM's. None for an
+    unfinished direction (--partial): no threshold."""
+    if lf_z is None or lf_x is None:
+        return dict(p_th=0.0, p_th_error=0.0, p_th_Z=0.0, p_th_X=0.0)
     (z, z_err), (x, x_err) = _threshold_from_log_fail(lf_z, min_ler), _threshold_from_log_fail(lf_x, min_ler)
     p_th, err = min(((t, e) for t, e in ((z, z_err), (x, x_err)) if t > 0), default=(0.0, 0.0))
     return dict(p_th=p_th, p_th_error=err, p_th_Z=z, p_th_X=x)
@@ -281,8 +306,9 @@ def _run_tasks(pool: Pool, tasks: list[dict]) -> list:
     with tqdm(total=len(tasks), unit="dir", desc=tasks[0]["scheme"] if tasks else None) as bar:
         for i, lf in pool.imap_unordered(_indexed, enumerate(tasks)):
             out[i] = lf
-            bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
-                                f"{100 * _threshold_from_log_fail(lf, MIN_ERRORS / tasks[i]['shots'])[0]:.3f}%")
+            if lf is not None:
+                bar.set_postfix_str(f"last: {tasks[i]['basis']} memory, threshold "
+                                    f"{100 * _threshold_from_log_fail(lf, MIN_ERRORS / tasks[i]['shots'])[0]:.3f}%")
             bar.update()
     return out
 
@@ -301,7 +327,7 @@ def _run_both(pool: Pool, tasks: list[dict]) -> list[dict]:
 def _run(args, pool: Pool, bias_only: bool = False) -> dict:
     base = dict(scheme=args.scheme, code=args.code, distances=args.distances, shots=args.shots, batch=args.batch,
                 max_fail=args.max_fail, max_fail_rate=args.max_fail_rate, decoder=args.decoder,
-                retries=args.retries, cache_only=args.plot_only)
+                retries=args.retries, cache_only=args.plot_only, partial=args.partial)
     eta = dict(eta_g=args.eta_g, eta_t=args.eta_t)
     axes = [args.pg, args.pt, args.pr]
     if None in axes:  # coarse scan along each axis for where to aim the grid
@@ -382,10 +408,13 @@ def _plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> N
         face[np.isnan(zi)] = (1, 1, 1, 0)
         ax.plot_surface(xg, yg, zi, rstride=1, cstride=1, facecolors=face, alpha=alpha, antialiased=False,
                         linewidth=0, shade=False)
-    ax.scatter(p_g, p_t, p_r, c=p_th, cmap=cmap, norm=norm, marker=".")
-    cbar = plt.colorbar(mappable, ax=ax, shrink=0.6, pad=0.1)
-    cbar.set_label(r"$p_{th}$ [%]", rotation=270, labelpad=13)
-    ax.set(xlabel=r"$p_G$ [%]", ylabel=r"$p_T$ [%]", zlabel=r"$p_R$ [%]")
+    ax.scatter(p_g, p_t, p_r, c=p_th, cmap=cmap, norm=norm, marker=".", s=6)
+    cbar = plt.colorbar(mappable, ax=ax, shrink=0.65, pad=0.1, aspect=15)
+    cbar.set_label(r"$p_{th}$ [%]", rotation=270, labelpad=10)
+    ax.tick_params(pad=-2)
+    ax.set_xlabel(r"$p_G$ [%]", labelpad=-5)
+    ax.set_ylabel(r"$p_T$ [%]", labelpad=-5)
+    ax.set_zlabel(r"$p_R$ [%]", labelpad=-5)
     ax.set_xlim(0)
     ax.set_ylim(0)
     ax.set_zlim(0)
@@ -395,28 +424,37 @@ def _plot_surface(ax, rows: list, cmap: str = "copper", alpha: float = 0.5) -> N
 def _plot(data: dict, png: Path) -> None:
     """(b) the threshold surface with the bias ranges of (c) as arrows on its axes, (c) p_T^th vs eta_T and
     p_G^th vs eta_G (IBM's bias figure), dotted lines at the eta the surface used."""
+    with plt.rc_context({"font.size": 8, "xtick.labelsize": 7, "ytick.labelsize": 7, "legend.fontsize": 7}):
+        _plot_paper(data, png)
+
+
+def _plot_paper(data: dict, png: Path) -> None:
+    """_plot at its printed size, \\textwidth (6.5 in) by 2.6 in with 8 pt text, so a paper can stack several
+    without shrinking them: the 3D box zoomed in over its default padding, the colorbar right against it."""
     s = data["settings"]
-    fig = plt.figure(figsize=(11, 4.5))
-    ax_b = fig.add_subplot(1, 2, 1, projection="3d")
+    fig = plt.figure(figsize=(6.5, 2.6))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.6, 1], wspace=0.45)
+    ax_b = fig.add_subplot(gs[0], projection="3d")
     _plot_surface(ax_b, data["surface"])
+    ax_b.set_box_aspect(None, zoom=1.3)
     g = [(r["eta_g"], 100 * r["p_th"]) for r in data["g_bias"] if r["p_th"] > 0]
     t = [(r["eta_t"], 100 * r["p_th"]) for r in data["t_bias"] if r["p_th"] > 0]
     for pts, xyz, color in ((g, lambda lo, hi: ([lo, hi], [0, 0], [0, 0]), "b"),
                             (t, lambda lo, hi: ([0, 0], [lo, hi], [0, 0]), "g")):
         if pts:
             lo, hi = min(p for _, p in pts), max(p for _, p in pts)
-            ax_b.add_artist(Arrow3D(*xyz(lo, hi), mutation_scale=10, lw=2, arrowstyle="<|-|>", color=color))
+            ax_b.add_artist(Arrow3D(*xyz(lo, hi), mutation_scale=7, lw=1.5, arrowstyle="<|-|>", color=color))
     code = {"css": "", "x3z3": "X$^3$Z$^3$ "}[s.get("code", "css")]
-    ax_b.set_title(f"(b) {code}{s['scheme']}, d = {', '.join(map(str, s['distances']))}, "
-                   f"$\\eta_G$ = {s['eta_g']:g}, $\\eta_T$ = {s['eta_t']:g}", fontsize=10)
+    ax_b.set_title(f"(b) {code}{s['scheme']}, d = {', '.join(str(distance_label(d)) for d in s['distances'])}, "
+                   f"$\\eta_G$ = {s['eta_g']:g}, $\\eta_T$ = {s['eta_t']:g}", fontsize=8, pad=0)
 
-    ax_c = fig.add_subplot(1, 2, 2)
+    ax_c = fig.add_subplot(gs[1])
     ax_g = ax_c.twinx()
     handles = []
     if t:
-        handles += ax_c.plot(*zip(*t), "o-", c="g", label=r"$p_T^{th}(\eta_T)$")
+        handles += ax_c.plot(*zip(*t), "o-", c="g", ms=3, lw=1.2, label=r"$p_T^{th}(\eta_T)$")
     if g:
-        handles += ax_g.plot(*zip(*g), "o-", c="b", label=r"$p_G^{th}(\eta_G)$")
+        handles += ax_g.plot(*zip(*g), "o-", c="b", ms=3, lw=1.2, label=r"$p_G^{th}(\eta_G)$")
     ax_c.semilogx()
     ax_c.axvline(s["eta_t"], ls="dotted", c="g")
     ax_c.axvline(s["eta_g"], ls="dotted", c="b")
@@ -427,10 +465,9 @@ def _plot(data: dict, png: Path) -> None:
     ax_c.set_xlabel(r"error bias $\eta$")
     ax_c.set_ylabel(r"$p_T^{th}$ [%]", c="g")
     ax_g.set_ylabel(r"$p_G^{th}$ [%]", c="b")
-    ax_c.legend(handles=handles, loc="lower left")
-    ax_c.set_title("(c)", fontsize=10, loc="left")
-    fig.tight_layout()
-    fig.savefig(png, dpi=200, bbox_inches="tight")
+    ax_c.legend(handles=handles, loc="lower left", frameon=False)
+    ax_c.set_title("(c)", fontsize=8, loc="left", pad=2)
+    fig.savefig(png, dpi=300, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 

@@ -12,16 +12,18 @@ from writing.results_csv import read_rows
 
 def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) -> plt.Figure:
     """One view of the layout with its legend and, with `numbers`, what the labels mean."""
-    fig, ax = plt.subplots(figsize=(6, 8))
+    # wide and short: the height sets the lattice's size, so it stays small next to a legend in a readable font
+    fig, ax = plt.subplots(figsize=(8, 5.2))
     _draw_layout(ax, distance, hex_view, numbers)
     handles, _ = ax.get_legend_handles_labels()
     handles += [Patch(facecolor=COLORS[c], alpha=0.25, edgecolor="0.4",
                       label=f"colour {c}: sub-round {c} checks\nthe edges linking two of these")
                 for c in range(3)]
-    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False, fontsize=9)
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.02), frameon=False, fontsize=10,
+              labelspacing=0.4)
     if numbers:
         n_data = list(qubit_kinds(distance).values()).count("data")
-        ax.text(1.04, 0.5,
+        ax.text(1.04, 0.42,
                 "Labels\n"
                 f"D$i$  data qubit $i$, stim index $i$\n"
                 f"S$k$  syndrome ancilla of edge $k$: next to its\n"
@@ -32,7 +34,7 @@ def layout_figure(distance: int, hex_view: bool = False, numbers: bool = False) 
                 f"       stim index {n_data} + 2$k$ + 1\n"
                 f"$k$ is the edge's place in edge_list, so S$k$ and R$k$\n"
                 f"are one spin-blockade pair.",
-                transform=ax.transAxes, va="top", fontsize=9, color="#333333", linespacing=1.4)
+                transform=ax.transAxes, va="top", fontsize=10, color="#333333", linespacing=1.3)
     return fig
 
 
@@ -116,14 +118,14 @@ def _draw_layout(ax: plt.Axes, distance: int, hex_view: bool = False, numbers: b
     if numbers:
         for q, text in _qubit_labels(distance).items():
             ax.annotate(text, (pos[q].real, pos[q].imag), xytext=(4, 3), textcoords="offset points",
-                        fontsize=6.5, color="#222222", fontweight="bold" if kinds[q] == "data" else "normal",
+                        fontsize=7, color="#222222", fontweight="bold" if kinds[q] == "data" else "normal",
                         zorder=4)
     corner = window(list(pos.values()), p)
     ax.set_xlim(corner.real, corner.real + p.real)
     ax.set_ylim(corner.imag + p.imag, corner.imag)  # y grows downward, as in stim's timeslice diagrams
     ax.set_aspect("equal")
     ax.set_title(f"{len(kinds)} qubits, " + ("regular hexagons (drawing only)" if hex_view
-                                            else "brick wall (the circuits' coordinates)"), fontsize=10)
+                                            else "brick wall (the circuits' coordinates)"), fontsize=11)
 
 
 def _layout_png(distance: int, png: Path, hex_view: bool = False, numbers: bool = False) -> None:

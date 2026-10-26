@@ -26,7 +26,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from floquet import CODES, memory_circuit
+import floquet
+from floquet import CODES, code_distance_png, code_memory_circuit, distance_label, even_distance, rounds_label
 from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
 from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, clopper_pearson
@@ -41,9 +42,10 @@ CODE_ALPHA = {"x3z3": 1.0, "css": 0.55}
 
 def main() -> None:
     args = sweep_parser(__doc__).parse_args()
+    floquet.LABEL_CODE_DISTANCE = args.code_distance
     rows = sweep(args)
     for eta in sorted({float(r["eta"]) for r in rows}):
-        png = Path(f"{args.out}_ler_eta{eta:g}.png")
+        png = code_distance_png(Path(f"{args.out}_ler_eta{eta:g}.png"))
         _ler_figure(rows, eta, png)
         print(f"wrote {png}")
 
@@ -54,7 +56,8 @@ def sweep_parser(doc: str) -> argparse.ArgumentParser:
     parser.add_argument("--codes", nargs="+", choices=CODES, default=list(CODES))
     parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
     parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--distances", type=even_distance, nargs="+", default=[6, 10],
+                        help="code distances (even); each runs d rounds")
     parser.add_argument("--etas", type=float, nargs="+", default=[0.5, 1, 3, 10, 30, 100, 1000])
     parser.add_argument("--p-min", type=float, default=2e-4)
     parser.add_argument("--p-max", type=float, default=1.5e-2)
@@ -64,6 +67,9 @@ def sweep_parser(doc: str) -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--out", type=Path, help="writes <out>.csv and <out>_*.png")
     parser.add_argument("--plot-only", action="store_true", help="redraw from <out>.csv")
+    parser.add_argument("--code-distance", action="store_true",
+                        help="for CSVs from before --distances meant the code distance (they record L): label 2L, into new "
+                             "files named with it (floquet.code_distance)")
     return parser
 
 
@@ -129,7 +135,7 @@ def save(fig, png: Path) -> None:
 @lru_cache(maxsize=None)
 def _circuit(code: str, scheme: str, distance: int, basis: str):
     """The noiseless memory circuit, d rounds: once per worker."""
-    return memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
+    return code_memory_circuit(distance, SCHEMES[scheme], basis, code)
 
 
 def _point(task: dict) -> dict:
@@ -173,12 +179,12 @@ def _ler_figure(rows: list[dict], eta: float, png: Path) -> None:
         ax.loglog()
         ax.set(xlabel="physical error rate p", title=scheme)
         style_axes(ax)
-    axes[0][0].set_ylabel("logical failure probability $p_L$ (d rounds)")
+    axes[0][0].set_ylabel(f"logical failure probability $p_L$ ({rounds_label()})")
     codes = [c for c in CODES if any(r["code"] == c for r in rows)]
     blocks(axes[0][-1], [
         ("Schemes", [Line2D([], [], marker=STYLES[s][1], ls=STYLES[s][0], color="0.3", label=s) for s in schemes]),
         ("Codes", [Line2D([], [], marker="o", ls="none", label=CODE_LABEL[c], **_mark(c, "0.3")) for c in codes]),
-        ("Distances", [Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR.get(d, "0.3"), label=str(d))
+        ("Distances", [Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR.get(d, "0.3"), label=str(distance_label(d)))
                        for d in distances])])
     fig.suptitle(f"{rows[0]['noise']} noise, η = {eta:g}; dotted: LER = p")
     save(fig, png)

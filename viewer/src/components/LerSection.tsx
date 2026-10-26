@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { crossing, pct, PCT, schemeName, type Row, type Series } from "../data";
+import { crossing, dLabel, pct, PCT, roundsLabel, schemeName, type Row, type Series } from "../data";
 import { axis, baseLayout, css, distColor, store } from "../theme";
 import { combined, style, type FootRow, type Point } from "./FootSection";
 import { Plot, type Trace } from "./Plot";
@@ -32,7 +32,7 @@ export function LerSection({ ler }: { ler: Series[] }) {
                    arrayminus: seen.map(p => p.ler - p.lo), color: distColor(+d), thickness: 1, width: 3 },
         line: { color: distColor(+d), width: 2, dash: apart ? (c.basis === "X" ? "dot" : "solid") : dash },
         marker: { size: 7, color: distColor(+d), symbol: hollow ? `${symbol}-open` : symbol, line: { width: hollow ? 1.5 : 0 } },
-        hovertemplate: `p %{x:.2e}<br>LER %{y:.3g}<extra>${label(c)}, d=${d}</extra>` };
+        hovertemplate: `p %{x:.2e}<br>LER %{y:.3g}<extra>${label(c)}, d=${dLabel(+d)}</extra>` };
     });
   });
   const legend = (group: string, extra: Trace) =>
@@ -41,7 +41,7 @@ export function LerSection({ ler }: { ler: Series[] }) {
   [...new Set(pts.map(p => p.scheme))].forEach(sc => legend("Schemes", { mode: apart ? "markers" : "lines+markers",
     name: schemeName(sc), line: { color: grey, dash: style(sc)[0] }, marker: { symbol: style(sc)[1], size: 9, color: grey } }));
   [...new Set(pts.map(p => p.distance))].sort((a, b) => a - b).forEach(d =>
-    legend("Distances", { mode: "markers", name: String(d), marker: { symbol: "square", size: 9, color: distColor(d) } }));
+    legend("Distances", { mode: "markers", name: String(dLabel(d)), marker: { symbol: "square", size: 9, color: distColor(d) } }));
   if (both) codes.forEach(code => legend("Codes", { mode: "markers", name: code,
     marker: { symbol: code === "css" ? "circle-open" : "circle", size: 9, color: grey } }));
   if (apart) bases.forEach(b => legend("Memory", { mode: "lines", name: b,
@@ -70,7 +70,7 @@ export function LerSection({ ler }: { ler: Series[] }) {
         layout={{ ...baseLayout(), title: { text: r0 ? `${r0.noise} noise, η = ${r0.eta}` : "" },
                   legend: { ...baseLayout().legend, groupclick: "toggleitem" },
                   xaxis: axis("Physical error rate p", { type: "log" }),
-                  yaxis: axis(`Logical error rate (d rounds, ${combine ? "Z or X" : "per"} memory)`, { type: "log" }) }} />
+                  yaxis: axis(`Logical error rate (${roundsLabel()}, ${combine ? "Z or X" : "per"} memory)`, { type: "log" }) }} />
       <p className="note">
         x is p, the two-qubit gate error; the noise model scales the rest off it (spin: readout 5p, reset 2p,
         idling per round 2p, 1-qubit gates p/10). Error bars are 95% Wilson intervals; points with zero logical
@@ -83,7 +83,7 @@ export function LerSection({ ler }: { ler: Series[] }) {
           return (
             <tr key={k}>
               <td>{label(curve[0])}</td>
-              <td className="num">{c ? c.ds.join(", ") : "—"}</td>
+              <td className="num">{c ? c.ds.map(dLabel).join(", ") : "—"}</td>
               <td className="num">{c?.p ? pct(c.p) : "no crossing"}</td>
               <td className="num">{c?.p ? `${(c.lo * PCT).toFixed(3)}–${pct(c.hi)}` : "—"}</td>
             </tr>

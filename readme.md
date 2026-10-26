@@ -83,7 +83,8 @@ src/single_ancilla/   shared/ (layout.py: one-ancilla lattice, corner_readout.py
 src/experiments/      physical_to_logical.py (LER vs p, and SCHEMES), footprint.py, thresholds.py,
                       x3z3_ler.py + x3z3_bias.py (X³Z³ vs CSS sweep)
 notebooks/            walkthroughs of each scheme, of the memory experiment and of the X³Z³ code
-results/              all generated output, laid out like src/
+results/              all generated output: two_ancillas/ and single_ancilla/ (per-scheme drawings and thresholds),
+                      physical_to_logical/ (LER vs p; <scheme>/ for ler-etas), footprint/, x3z3/
 docs/                 write-ups: floquet_rounds, decoding, spin_x3z3_readout, one_ancilla_review
 viewer/               Vite + React viewer behind `make serve`
 ```

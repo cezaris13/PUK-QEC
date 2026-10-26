@@ -3,15 +3,23 @@ import { BiasSection } from "./components/BiasSection";
 import { FootSection } from "./components/FootSection";
 import { LerSection } from "./components/LerSection";
 import { SurfaceSection } from "./components/SurfaceSection";
-import { loadAll, type Results } from "./data";
+import { codeDistanceShown, loadAll, setShowCodeDistance, type Results } from "./data";
 import { applyTheme, isDark, store } from "./theme";
 
 const THEME_KEY = "floquet-theme";
+const DIST_KEY = "floquet-distance";  // "lattice" to label with L; anything else, the code distance 2L
+setShowCodeDistance(store.get(DIST_KEY) !== "lattice");
 
 export function App() {
   const [data, setData] = useState<Results | null>(null);
   const [error, setError] = useState("");
   const [, setDark] = useState(isDark());     // a re-render reads the CSS tokens afresh
+  const [codeD, setCodeD] = useState(codeDistanceShown());
+  const pickDistance = (on: boolean) => {
+    setShowCodeDistance(on);                  // before the render, so every label reads it
+    store.set(DIST_KEY, on ? "code" : "lattice");
+    setCodeD(on);
+  };
 
   useEffect(() => { loadAll().then(setData, e => setError(String(e))); }, []);
   useEffect(() => {
@@ -39,6 +47,10 @@ export function App() {
             (methods A, B, C). Read straight from the CSV/JSON files under <code>results/</code>.
           </p>
         </div>
+        <label className="theme" title="CSVs record L (--distances); the code distance is 2L">
+          <input type="checkbox" checked={codeD} onChange={e => pickDistance(e.target.checked)} />{" "}
+          {codeD ? "code distance d = 2L" : "lattice size L"}
+        </label>
         <button type="button" className="theme" onClick={flip}>{isDark() ? "☀ Light" : "☾ Dark"}</button>
       </div>
       {error ? <p className="empty">Could not load results: {error}</p>

@@ -16,7 +16,7 @@ import pymatching
 import stim
 from tqdm import tqdm
 
-from floquet import memory_circuit
+from floquet import lattice_size, memory_circuit
 from noise import NOISE_MODELS, add_noise, uniform_noise_model
 from writing.results_csv import run_points
 
@@ -90,7 +90,7 @@ def main() -> None:
 @lru_cache(maxsize=None)
 def _pairs_circuit(distance: int, rounds: int) -> stim.Circuit:
     from pairs import round_circuit  # ponytail: the CLI runs the two-ancilla scheme only; physical_to_logical.py runs every scheme
-    return memory_circuit(distance, rounds, round_circuit)
+    return memory_circuit(lattice_size(distance), rounds, round_circuit)  # --distance is the code distance
 
 
 def _pairs_point(task: dict) -> dict:

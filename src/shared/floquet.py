@@ -1,5 +1,7 @@
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterable
 
 import stim
@@ -47,6 +49,68 @@ class Edge:
 def period(distance: int) -> complex:
     """Size of the torus: coordinates wrap at this width (real part) and height (imaginary part)."""
     return complex(4 * distance, 6 * distance)
+
+
+def code_distance(distance: int) -> int:
+    """The code distance of the lattice built for `distance` (the L every function here takes): a torus of
+    3L x 2L hexagons, whose shorter logical has distance 2L (IBM's convention). The observable memory_circuit
+    tracks is the longer one, 3L. The experiments take the code distance itself (`code_memory_circuit`); this is
+    for CSVs from before that, which record L (plots relabel them under --code-distance, `distance_label`)."""
+    return 2 * distance
+
+
+def lattice_size(d: int) -> int:
+    """L for code distance `d`: d = 2L, so d has to be even."""
+    if d < 2 or d % 2:
+        raise ValueError(f"code distance {d}: has to be even and at least 2 (lattice size L = d / 2)")
+    return d // 2
+
+
+def even_distance(text: str) -> int:
+    """argparse type for --distances: a code distance, even."""
+    try:
+        return 2 * lattice_size(int(text))
+    except ValueError as e:
+        import argparse
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def code_memory_circuit(d: int, step: Callable[..., stim.Circuit], basis: str = "Z",
+                        code: str = "css") -> stim.Circuit:
+    """The memory experiment at code distance `d`: the lattice of size L = d / 2, run for d rounds (each a full
+    period of the 6-step schedule). What every experiment script builds; their --distances are code distances."""
+    return memory_circuit(lattice_size(d), d, step, basis, code)
+
+
+# Set by the plotting scripts' --code-distance: label plots with code_distance(L) instead of L, and write them
+# to new files named with it (`code_distance_png`), leaving the L-labelled plots alone.
+LABEL_CODE_DISTANCE = False
+
+
+def distance_label(distance: int) -> int:
+    """`distance` as a code distance under --code-distance. ponytail: tells old CSVs (which record the lattice size
+    L) from new ones (the code distance d) by parity: every old run used odd L, and d is always even. An even L
+    from before would be mislabelled; record a lattice column if that ever matters."""
+    return code_distance(distance) if LABEL_CODE_DISTANCE and distance % 2 else distance
+
+
+def rounds_label(rounds: str = "d") -> str:
+    """How long a memory experiment runs, for axis labels and titles: `rounds` periods of the 6-step schedule,
+    which is d rounds in L-labelled plots and d/2 periods in code-distance ones."""
+    if not LABEL_CODE_DISTANCE:
+        return f"{rounds} rounds"
+    return "d/2 periods" if rounds == "d" else f"{rounds} periods"
+
+
+def code_distance_png(png: Path) -> Path:
+    """`png` with its first _d<L>-<L>... part renamed to the code distances (_d3-5 -> _d6-10) under
+    --code-distance; unchanged otherwise."""
+    if not LABEL_CODE_DISTANCE:
+        return png
+    renamed = re.sub(r"_d(\d+(?:-\d+)*)(?=_)",
+                     lambda m: "_d" + "-".join(str(distance_label(int(x))) for x in m[1].split("-")), png.name, count=1)
+    assert renamed != png.name, f"no _d<lattice sizes>_ in {png.name} to rename (already code distances?)"
+    return png.with_name(renamed)
 
 
 def torus(c: complex, distance: int) -> complex:
