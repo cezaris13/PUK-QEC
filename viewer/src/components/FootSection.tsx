@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { runLabel, schemeName, type Row } from "../data";
+import { codeDistanceShown, dLabel, roundsLabel, runLabel, schemeName, type Row } from "../data";
 import { axis, baseLayout, css, distColor } from "../theme";
 import { Plot, type Trace } from "./Plot";
 
@@ -66,7 +66,7 @@ export function FootSection({ foot }: { foot: Record<string, Row[]> }) {
   const pts = combined((foot[path] ?? []) as FootRow[]);
   const codes = [...new Set(pts.map(p => p.code))], schemes = [...new Set(pts.map(p => p.scheme))];
   const both = codes.length > 1;
-  const X = (q: number, d: number) => byQ ? Math.sqrt(q) : d;
+  const X = (q: number, d: number) => byQ ? Math.sqrt(q) : dLabel(d);
   const traces: Trace[] = [];
   const legend = (group: string, extra: Trace) =>
     traces.push({ type: "scatter", x: [null], y: [null], legendgroup: group, legendgrouptitle: { text: group }, ...extra });
@@ -81,7 +81,7 @@ export function FootSection({ foot }: { foot: Record<string, Row[]> }) {
                  arrayminus: seen.map(p => p.ler - p.lo), thickness: 1, width: 3 },
       marker: { size: 9, symbol: hollow ? `${symbol}-open` : symbol, color: seen.map(p => distColor(p.distance)),
                 line: { width: hollow ? 1.5 : 0 } },
-      text: seen.map(p => `${both ? code + ", " : ""}${schemeName(s)}, d=${p.distance}<br>${p.qubits} qubits`),
+      text: seen.map(p => `${both ? code + ", " : ""}${schemeName(s)}, d=${dLabel(p.distance)}<br>${p.qubits} qubits`),
       hovertemplate: "%{text}<br>LER %{y:.3g}<extra></extra>" });
     const f = fit(mine, target);
     if (f) {
@@ -102,7 +102,7 @@ export function FootSection({ foot }: { foot: Record<string, Row[]> }) {
   schemes.forEach(s => legend("Schemes", { mode: "markers", name: schemeName(s),
     marker: { symbol: style(s)[1], size: 9, color: css("--text-secondary") } }));
   [...new Set(pts.map(p => p.distance))].sort((a, b) => a - b).forEach(d =>
-    legend("Distances", { mode: "markers", name: String(d), marker: { symbol: "square", size: 9, color: distColor(d) } }));
+    legend("Distances", { mode: "markers", name: String(dLabel(d)), marker: { symbol: "square", size: 9, color: distColor(d) } }));
 
   const allQ = [...pts.map(p => p.qubits), ...fits.map(r => r.f?.qubits ?? 0)];
   const ticks = NICE.filter(q => q <= Math.max(...allQ, 1) * 1.05);
@@ -143,8 +143,8 @@ export function FootSection({ foot }: { foot: Record<string, Row[]> }) {
           xaxis: byQ
             ? axis("Total physical qubits (√ scale)", { tickvals: ticks.map(Math.sqrt), ticktext: ticks.map(String),
                                                         range: [Math.sqrt(0.8 * Math.min(...allQ)), Math.sqrt(Math.max(...allQ) * 1.05)] })
-            : axis("Code distance d", { dtick: 2 }),
-          yaxis: axis("Logical error rate, Z or X memory (d rounds)", { type: "log", exponentformat: "power" }) }} />
+            : axis(codeDistanceShown() ? "Code distance d" : "Lattice size L", { dtick: dLabel(2) }),
+          yaxis: axis(`Logical error rate, Z or X memory (${roundsLabel()})`, { type: "log", exponentformat: "power" }) }} />
       <p className="note">
         Z and X memory combined, p_L = 1 − (1 − p_Z)(1 − p_X), with 95% Wilson bars. Points with no logical errors are
         left out. Each fit is ln LER = a + b·d, a straight line on the √ qubit axis because N = ν d²; Λ = LER(d) / LER(d + 2).
@@ -154,9 +154,9 @@ export function FootSection({ foot }: { foot: Record<string, Row[]> }) {
         <tr><th>Code</th><th>Scheme</th><th>ν = qubits / d²</th><th>Λ</th><th>d for target</th><th>Qubits for target</th></tr>
         {fits.map(({ code, s, f, nu }) => (
           <tr key={code + s}>
-            <td>{code}</td><td>{schemeName(s)}</td><td className="num">{nu.toFixed(1)}</td>
+            <td>{code}</td><td>{schemeName(s)}</td><td className="num">{(nu / dLabel(1) ** 2).toFixed(1)}</td>
             <td className="num">{f ? f.lambda.toFixed(1) : "no fit"}</td>
-            <td className="num">{f ? f.d.toFixed(1) : "—"}</td>
+            <td className="num">{f ? dLabel(f.d).toFixed(1) : "—"}</td>
             <td className="num">{f ? Math.round(f.qubits).toLocaleString() : "—"}</td>
           </tr>
         ))}

@@ -2,7 +2,23 @@
 // footprint CSVs (footprint.py), threshold summaries (thresholds.py's <name>_thresholds.csv) and the X3Z3 vs CSS
 // bias sweeps (x3z3_bias.py / x3z3_ler.py).
 
+// The page keeps the results it parsed when it loaded, so hot-swapping this module would pair new code with data
+// parsed the old way: reload the page whenever it changes instead.
+import.meta.hot?.accept(() => location.reload());
+
 export const PCT = 100;
+
+// Older CSVs record L, the lattice size; newer ones the code distance d = 2L (--distances is d now; a torus of
+// 3L x 2L hexagons; floquet.code_distance). App's header switch picks which one labels the plots.
+let showCodeDistance = true;
+export const setShowCodeDistance = (on: boolean) => { showCodeDistance = on; };
+export const codeDistanceShown = () => showCodeDistance;
+/** A distance label, the code distance or the lattice size. ponytail: older CSVs record L (always odd: 3, 5, 7),
+ *  newer ones the code distance d = 2L (always even), so parity says which a value is. */
+export const dLabel = (x: number) => (showCodeDistance ? (x % 2 ? 2 * x : x) : (x % 2 ? x : x / 2));
+/** How long a memory experiment runs: `r` periods of the 6-step schedule ("d" for d of them). */
+export const roundsLabel = (r: string | number = "d") =>
+  !showCodeDistance ? `${r} rounds` : r === "d" ? "d/2 periods" : `${r} periods`;
 
 /** One row of an LER or footprint CSV. `scheme` is missing in shared/memory.py's files, `qubits`
  *  only in footprint.py's. */
@@ -39,7 +55,7 @@ export interface ThresholdRow {
 }
 
 export interface ThresholdRun {
-  settings: { scheme: string; distances: number[]; decoder: string; eta_g: number; eta_t: number };
+  settings: { scheme: string; code: string; distances: number[]; decoder: string; eta_g: number; eta_t: number };
   axes: [number, number, number];      // p_G, p_T, p_R thresholds along each axis
   surface: ThresholdRow[];
   g_bias: ThresholdRow[];
@@ -54,7 +70,7 @@ function thresholdRun(rows: SummaryRow[]): ThresholdRun {
   const axis = rows.filter(r => r.group === "axis"), first = axis[0] ?? rows[0];
   const group = (g: string) => rows.filter(r => r.group === g);
   return {
-    settings: { scheme: first.scheme, decoder: first.decoder, eta_g: first.eta_g, eta_t: first.eta_t,
+    settings: { scheme: first.scheme, code: first.code || "css", decoder: first.decoder, eta_g: first.eta_g, eta_t: first.eta_t,
                 distances: String(first.distances).split(" ").map(Number) },
     axes: axis.map(r => r.p_th) as [number, number, number],
     surface: group("surface"), g_bias: group("g_bias"), t_bias: group("t_bias"),
@@ -169,3 +185,35 @@ export const surfPoints = (d: ThresholdRun) => d.surface.filter(r => r.p_th > 0)
 }));
 
 export const pct = (v: number) => (v * PCT).toFixed(3) + " %";
+
+/** Volume between the origin and the surface, in %³: thresholds.py's grid is a triangle of n(n+1)/2 directions
+ *  in (s, t) order, so neighbours form triangles, and each with the origin is a tetrahedron |a·(b×c)| / 6.
+ *  `corners` are the surface's own (p_G, p_T, p_R) axis points; `flat` the volume / G T R / 6 of the corner
+ *  tetrahedron, 1 when the surface is the flat triangle through them. Triangles with a direction that found no
+ *  crossing are left out and counted in `missing`. */
+export function surfVolume(d: ThresholdRun) {
+  const rows = d.surface, N = rows.length, n = Math.round((Math.sqrt(8 * N + 1) - 1) / 2);
+  if (!N || (n * (n + 1)) / 2 !== N) return null;
+  const at = (i: number, j: number) => i * n - (i * (i - 1)) / 2 + j;  // row of grid point (i, j), i + j < n
+  const vec = (k: number) => {
+    const r = rows[k], p = PCT * r.p_th;
+    return r.p_th > 0 ? [p * Math.cos(r.theta) * Math.cos(r.phi), p * Math.cos(r.theta) * Math.sin(r.phi),
+                         p * Math.sin(r.theta)] : null;
+  };
+  const tet = (a: number[], b: number[], c: number[]) => Math.abs(
+    a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+  let volume = 0, missing = 0, total = 0;
+  for (let i = 0; i < n; i++) for (let j = 0; i + j < n; j++) {
+    const tris = [];
+    if (i + j + 1 < n) tris.push([at(i, j), at(i + 1, j), at(i, j + 1)]);
+    if (i + j + 2 < n) tris.push([at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)]);
+    for (const t of tris) {
+      total++;
+      const [a, b, c] = t.map(vec);
+      if (a && b && c) volume += tet(a, b, c); else missing++;
+    }
+  }
+  const corners = [at(0, 0), at(n - 1, 0), at(0, n - 1)].map(k => PCT * rows[k].p_th);  // G, T, R
+  const box = corners[0] * corners[1] * corners[2] / 6;
+  return { volume, corners, flat: box > 0 ? volume / box : null, missing, total };
+}

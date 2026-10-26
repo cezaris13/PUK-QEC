@@ -36,8 +36,11 @@ SCHEMES = {"pairs": pairs.round_circuit, "method_a": method_a.round_circuit, "me
 # line style and marker per scheme; colour is the distance
 STYLES = {"pairs": ("-", "o"), "method_a": ("--", "D"), "method_b": ("-.", "^"), "method_c": (":", "v"), "pairs_bell": ((0, (6, 2, 1, 2, 1, 2)), "s")}
 # colour per distance: the N2E3N2 paper's Figure 4 green / blue / red for the odd distances used here
+# Odd keys: lattice sizes L of runs from before --distances meant the code distance; even keys: code distances
+# d = 2L, the same green / blue / red sequence for 6, 10, 14 as for L = 3, 5, 7, paler in between.
 DISTANCE_COLOUR = {3: "#2ca02c", 5: "#1f77b4", 7: "#d62728", 9: "#9467bd",
-                   4: "#8fce8f", 6: "#8fb4e8", 8: "#f0928f", 10: "#c5b0d5"}
+                   6: "#2ca02c", 10: "#1f77b4", 14: "#d62728", 18: "#9467bd",
+                   2: "#7f7f7f", 4: "#8fce8f", 8: "#8fb4e8", 12: "#f0928f", 16: "#c5b0d5"}
 
 
 def clopper_pearson(errors: int, shots: int) -> tuple[float, float]:
@@ -76,7 +79,7 @@ def legend_blocks(ax, schemes: list[str], distances: list[int], lines: bool) -> 
                       title="Schemes", fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1),
                       frameon=False)
     ax.add_artist(first)
-    ax.legend(handles=[Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(d))
+    ax.legend(handles=[Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(floquet.distance_label(d)))
                        for d in distances], title="Distances", fontsize=7, title_fontsize=8, loc="upper left",
               bbox_to_anchor=(1.02, 0.45), frameon=False)
 
@@ -88,7 +91,7 @@ def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str
     out = {}
     for name in schemes:
         step = SCHEMES[name]
-        circuit = floquet.memory_circuit(distance, distance, step)
+        circuit = floquet.code_memory_circuit(distance, step)
         noisy = add_noise(circuit, NOISE_MODELS[noise](p, eta))
         dem = noisy.detector_error_model(approximate_disjoint_errors=True)  # raises if a detector is random
         sizes = [sum(t.is_relative_detector_id() for t in e.targets_copy()) for e in dem.flattened()
@@ -101,7 +104,8 @@ def dem_stats(distance: int, noise: str, eta: float, p: float, schemes: list[str
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5])
+    parser.add_argument("--distances", type=floquet.even_distance, nargs="+", default=[6, 10],
+                        help="code distances (even); each runs d rounds")
     parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
     parser.add_argument("--codes", nargs="+", choices=floquet.CODES, default=["css"],
                         help="css and/or x3z3; each runs the Z and the X memory, combined in the plot")
@@ -116,15 +120,20 @@ def main() -> None:
                                                      "in results/physical_to_logical/")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--code-distance", action="store_true",
+                        help="for CSVs from before --distances meant the code distance (they record L): label 2L, into new "
+                             "files named with it (floquet.code_distance)")
     parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
+    floquet.LABEL_CODE_DISTANCE = args.code_distance
     if args.out is None:  # named like the Makefile's files
         args.out = Path("results/physical_to_logical") / (
-            f"{args.noise}_eta{args.eta:g}_p{args.p_min:g}-{args.p_max:g}x{args.num}_shots{args.shots}"
+            f"{args.noise}_eta{args.eta:g}_d{'-'.join(map(str, args.distances))}"
+            f"_p{args.p_min:g}-{args.p_max:g}x{args.num}_shots{args.shots}"
             f"_{'-'.join(args.schemes)}_physical_to_logical")
 
     if args.plot_only:
-        _plot(read_rows(Path(f"{args.out}.csv")), Path(f"{args.out}.png"))
+        _plot(read_rows(Path(f"{args.out}.csv")), floquet.code_distance_png(Path(f"{args.out}.png")))
         return
 
     for name, s in dem_stats(args.distances[0], args.noise, args.eta, 1e-3, args.schemes).items():
@@ -136,14 +145,14 @@ def main() -> None:
              for code in args.codes for name in args.schemes for d in args.distances for b in "ZX"
              for p in np.geomspace(args.p_min, args.p_max, args.num)]
     rows = run_points(Path(f"{args.out}.csv"), tasks, _point, args.workers, sources=args.sources)
-    _plot(rows, Path(f"{args.out}.png"))
+    _plot(rows, floquet.code_distance_png(Path(f"{args.out}.png")))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 
 @lru_cache(maxsize=None)
 def _circuit(scheme: str, distance: int, code: str, basis: str) -> "stim.Circuit":
     """The noiseless memory circuit, d rounds: once per worker."""
-    return floquet.memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
+    return floquet.code_memory_circuit(distance, SCHEMES[scheme], basis, code)
 
 
 def _point(task: dict) -> dict:
@@ -187,7 +196,7 @@ def _plot(rows: list[dict], png: Path) -> None:
     lo, hi = min(r["p"] for r in rows), max(r["p"] for r in rows)
     ax.axline((lo, lo), (hi, hi), color="0.5", ls=":", lw=1)  # through the data's own p: fixed points widen the axis
     memory = "Z or X memory" if any(r["basis"] == "ZX" for r in rows) else "Z memory"
-    ax.set(xlabel="physical error rate p", ylabel=f"logical error rate, {memory} (d rounds)",
+    ax.set(xlabel="physical error rate p", ylabel=f"logical error rate, {memory} ({floquet.rounds_label()})",
            title=f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}")
     ax.grid(which="major", color="#e4e4e0", lw=0.8)
     ax.spines[["top", "right"]].set_visible(False)

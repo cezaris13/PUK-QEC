@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { runLabel, schemeName, type BiasRow } from "../data";
+import { dLabel, roundsLabel, runLabel, schemeName, type BiasRow } from "../data";
 import { axis, baseLayout, css, isDark } from "../theme";
 import { Plot, type Trace } from "./Plot";
 
@@ -158,7 +158,7 @@ export function BiasSection({ bias }: { bias: Record<string, BiasRow[]> }) {
         layout={{ ...L, font: { ...L.font, size: 13 }, margin: { l: 80, r: 190, t: 50, b: 60 },
           legend: legendBox(1, "Schemes"), legend2: legendBox(0.45, "Codes"),
           annotations: [panel("(a) threshold", 0.21),
-                        panel(`(b) d = ${dMax}, ${dMax} rounds, p = ${p.toPrecision(3)}`, 0.79)],
+                        panel(`(b) d = ${dLabel(dMax)}, ${roundsLabel(dMax)}, p = ${p.toPrecision(3)}`, 0.79)],
           xaxis: { ...logX, domain: [0, 0.42] }, xaxis2: { ...logX, domain: [0.58, 1], anchor: "y2" },
           yaxis: axis("threshold p<sub>th</sub>", { tickformat: ".4~f", showline: true, ticks: "outside",
                                                    linecolor: css("--text-secondary") }),

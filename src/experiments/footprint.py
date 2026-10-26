@@ -29,7 +29,8 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
-from floquet import CODES, memory_circuit
+import floquet
+from floquet import CODES, code_distance_png, code_memory_circuit, distance_label, even_distance, rounds_label
 from memory import logical_errors
 from noise import NOISE_MODELS, add_noise
 from physical_to_logical import DISTANCE_COLOUR, SCHEMES, STYLES, combined
@@ -40,7 +41,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--schemes", nargs="+", choices=SCHEMES, default=list(SCHEMES))
     parser.add_argument("--codes", nargs="+", choices=CODES, default=["css"], help="css and/or x3z3")
-    parser.add_argument("--distances", type=int, nargs="+", default=[3, 5, 7])
+    parser.add_argument("--distances", type=even_distance, nargs="+", default=[6, 10],
+                        help="code distances (even); each runs d rounds")
     parser.add_argument("--noise", choices=NOISE_MODELS, default="spin")
     parser.add_argument("--eta", type=float, default=10.0)
     parser.add_argument("--p", type=float, default=1e-3)
@@ -51,6 +53,9 @@ def main() -> None:
                                                      "in results/footprint/")
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     parser.add_argument("--plot-only", action="store_true", help="redraw <out>.png from <out>.csv")
+    parser.add_argument("--code-distance", action="store_true",
+                        help="for CSVs from before --distances meant the code distance (they record L): label 2L, into new "
+                             "files named with it (floquet.code_distance)")
     parser.add_argument("--sources", nargs="*", default=[], help="warn if any is newer than <out>.csv")
     args = parser.parse_args()
     if args.out is None:  # named like the Makefile's files
@@ -71,14 +76,15 @@ def main() -> None:
         print(f"{code:5} {name:12} " + (f"{fit[2]:,.0f} qubits for LER {args.target:g}" if fit else
                                          "no fit: under two distances with errors (more shots or larger p), or the "
                                          "LER rises with d (p above threshold: lower p)"))
-    _plot(rows, args.target, Path(f"{args.out}.png"))
+    floquet.LABEL_CODE_DISTANCE = args.code_distance
+    _plot(rows, args.target, code_distance_png(Path(f"{args.out}.png")))
     print(f"wrote {args.out}.csv, {args.out}.png")
 
 
 @lru_cache(maxsize=None)
 def _circuit(scheme: str, distance: int, code: str, basis: str):
     """The noiseless memory circuit, d rounds: once per worker."""
-    return memory_circuit(distance, distance, SCHEMES[scheme], basis, code)
+    return code_memory_circuit(distance, SCHEMES[scheme], basis, code)
 
 
 def _point(task: dict) -> dict:
@@ -141,13 +147,13 @@ def _plot(rows: list[dict], target: float, png: Path) -> None:
     ax.set_xlim(left=0.8 * min(r["qubits"] for r in rows))
     ax.xaxis.set_major_locator(MaxNLocator(6))  # sqrt spacing crowds the labels at the right end
     ax.set_yscale("log")
-    ax.set(xlabel="Total Physical Qubits", ylabel="Logical Error Rate, Z or X memory (d rounds)")
+    ax.set(xlabel="Total Physical Qubits", ylabel=f"Logical Error Rate, Z or X memory ({rounds_label()})")
     ax.set_title(f"{rows[0]['noise']} noise, η = {rows[0]['eta']:g}, p = {rows[0]['p']:g};"
                  f" dotted: target {target:g}", fontsize=10)
     ax.grid(which="both", alpha=0.3, lw=0.5)
     # one stacked legend, a bold header row per block: compact, and the tight crop sees all of it
     blocks = [("Schemes", [Line2D([], [], marker=STYLES[n][1], ls="none", color="0.3", label=n) for n in schemes]),
-              ("Distances", [Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(d))
+              ("Distances", [Line2D([], [], marker="s", ls="none", color=DISTANCE_COLOUR[d], label=str(distance_label(d)))
                              for d in sorted({r["distance"] for r in rows})]),
               ("Codes", [Line2D([], [], marker="o", color="0.3", ls="none", label="X3Z3 (filled, dark fit)"),
                          Line2D([], [], marker="o", mfc="white", color="0.3", ls="none",

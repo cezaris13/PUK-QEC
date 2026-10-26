@@ -17,6 +17,7 @@
 #   x3z3-bias   threshold and LER vs bias
 #   x3z3-ler    LER vs p per bias
 #   ler-etas    LER vs p per bias for LER_SCHEMES, both codes, Z and X memory combined, one plot per eta
+#   report      every report result at code distances 6, 10 (thresholds, X3Z3 bias sweep, footprint)
 #   serve       interactive viewer of results/ (needs node)
 #   clean       remove .venv
 
@@ -28,8 +29,10 @@ PY = .venv/bin/python
 
 # --- Memory experiment (plots, physical-to-logical) ---------------------------------------------------------
 
-# Code distances. One CSV and one LER line each; rounds = distance.
-DISTANCES = 3 5 7
+# Code distances d, even: every experiment builds the lattice of size L = d / 2 (a torus of 3L x 2L hexagons,
+# floquet.code_memory_circuit) and runs d rounds, each a full period of the 6-step schedule. Results from before
+# this recorded L instead (files named d3-5 ...); their plots can be relabelled with --code-distance.
+DISTANCES = 6 10
 # Noise model from NOISE_MODELS in src/shared/noise.py: spin or HBD.
 NOISE = spin
 # Bias eta = p_z / (p_x + p_y): 0.5 is depolarizing, large is mostly dephasing. spin biases every
@@ -55,8 +58,8 @@ SCHEMES = pairs method_a method_b method_c
 P = 1e-3
 TARGET = 1e-8
 FOOTPRINT_SHOTS = 10000000
-# Distances for the fit: d = 5 already needs ~10^7 shots at p = 1e-3 to see errors, d = 7 far more.
-FOOTPRINT_DISTANCES = 3 5
+# Code distances for the fit (even): the largest needs many shots at low p before it sees any errors.
+FOOTPRINT_DISTANCES = 6 10
 # Floquet codes, css and/or x3z3: with both, one plot compares them (X3Z3 filled markers, CSS hollow).
 FOOTPRINT_CODES = css
 
@@ -65,7 +68,7 @@ FOOTPRINT_CODES = css
 SCHEME = pairs
 # Floquet code: css, or x3z3 (Setiawan & McLauchlan); x3z3 files are named x3z3_<scheme>_...
 CODE = css
-THRESHOLD_DISTANCES = 3 5
+THRESHOLD_DISTANCES = 6 10
 # Grid of the threshold surface: NPHI (NPHI + 1) / 2 directions, each one a full scan, so run time grows ~NPHI^2.
 NPHI = 6
 # BIAS_ONLY=1 reruns only the bias plot (c) and keeps the surface (b) already saved for these settings.
@@ -85,7 +88,7 @@ MAX_FAIL = 2000
 # --- X3Z3 vs CSS (x3z3) -------------------------------------------------------------------------------------
 # Every scheme in SCHEMES, both codes, under NOISE at each of X3Z3_ETAS; p from X3Z3_P_MIN to X3Z3_P_MAX
 # (X3Z3_NUM log-spaced); x3z3-bias adds P, the p of its LER vs bias. SHOTS per point and basis.
-X3Z3_DISTANCES = 3 5
+X3Z3_DISTANCES = 6 10
 X3Z3_ETAS = 0.5 1 3 10 30 100 1000
 X3Z3_P_MIN = 2e-4
 X3Z3_P_MAX = 1.5e-2
@@ -97,7 +100,7 @@ X3Z3_NUM = 12
 # logical errors; points with none are drawn as their 95% upper bound.
 LER_SCHEMES = method_b
 LER_CODES = css x3z3
-LER_DISTANCES = 3 5 7
+LER_DISTANCES = 6 10 14
 LER_ETAS = 0.5 1 10 100 1000
 LER_P_MIN = 3e-4
 LER_P_MAX = 1e-2
@@ -214,7 +217,7 @@ footprint: $(FOOTPRINT).png
 
 $(FOOTPRINT).png: src/experiments/footprint.py src/experiments/physical_to_logical.py $(ONE_SRC)
 	$(PY) src/experiments/footprint.py --schemes $(SCHEMES) --distances $(FOOTPRINT_DISTANCES) --noise $(NOISE) --eta $(ETA) \
-		--p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT)
+		--codes $(FOOTPRINT_CODES) --p $(P) --shots $(FOOTPRINT_SHOTS) --target $(TARGET) --out $(FOOTPRINT)
 
 # Threshold surface (b) and threshold vs bias (c) after IBM's QEC-with-spin-qubits, for SCHEME, with their
 # bias-blind decoder. Writes results/two_ancillas/<SCHEME>/thresholds/<CODE>/ (pairs, pairs_bell) or
@@ -275,6 +278,20 @@ ler-etas:
 			|| exit 1; \
 	done
 
+# Every result of the report at code distances REPORT_DISTANCES, one after the other: threshold surface and bias
+# plots for every scheme and both codes (thresholds-medium), the X3Z3 vs CSS sweep (threshold and logical failure
+# rate vs bias), and the footprint at REPORT_P with both codes. Each step resumes from its CSVs, so rerunning
+# after a stop only runs what is missing.
+REPORT_SCHEMES = pairs method_a method_b method_c pairs_bell
+REPORT_DISTANCES = 6 10
+REPORT_P = 5e-4
+report:
+	$(MAKE) thresholds-medium SCHEMES="$(REPORT_SCHEMES)" THRESHOLD_DISTANCES="$(REPORT_DISTANCES)"
+	$(MAKE) thresholds-x3z3-medium SCHEMES="$(REPORT_SCHEMES)" THRESHOLD_DISTANCES="$(REPORT_DISTANCES)"
+	$(MAKE) x3z3 SCHEMES="$(REPORT_SCHEMES)" X3Z3_DISTANCES="$(REPORT_DISTANCES)" SHOTS=2000000
+	$(MAKE) footprint SCHEMES="$(REPORT_SCHEMES)" FOOTPRINT_DISTANCES="$(REPORT_DISTANCES)" FOOTPRINT_CODES="css x3z3" \
+		P=$(REPORT_P) FOOTPRINT_SHOTS=100000000 TARGET=1e-8
+
 # ============================================================================================================
 # Viewer and housekeeping
 # ============================================================================================================
@@ -291,4 +308,4 @@ clean:
 
 .DELETE_ON_ERROR:
 
-.PHONY: venv paths drawings plots physical-to-logical footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 x3z3-bias x3z3-ler ler-etas docs serve clean
+.PHONY: venv paths drawings plots physical-to-logical footprint thresholds thresholds-all thresholds-medium thresholds-paper thresholds-x3z3 thresholds-x3z3-medium x3z3 x3z3-bias x3z3-ler ler-etas report docs serve clean

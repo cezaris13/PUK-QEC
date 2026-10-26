@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { pct, PCT, runLabel, schemeName, surfPoints, type ThresholdRun } from "../data";
+import { dLabel, pct, PCT, runLabel, schemeName, surfPoints, surfVolume, type ThresholdRun } from "../data";
 import { axis, baseLayout, COPPER, css, G_COLOR, T_COLOR } from "../theme";
 import { Plot, type Trace } from "./Plot";
 
 type Key = "A" | "B";
+
+// thresholds.py writes .../thresholds/<code>/...; older summaries have no code column
+const codeOf = (path: string) => (path.includes("/x3z3/") || /(^|\/)x3z3_/.test(path) ? "x3z3" : "css");
 
 /** Each run's surface and dots shaded by p_th (A copper, B black to its series colour, each with its colourbar),
  * plus the bias-sweep ranges as bars on the p_G and p_T axes. */
@@ -61,8 +64,15 @@ const EMPTY_3D: Trace[] = [{ type: "scatter3d", x: [0], y: [0], z: [0], mode: "m
 /** thresholds.py's (b) surface and (c) bias plot, two runs at a time. */
 export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> }) {
   const paths = Object.keys(surf);
-  const [a, setA] = useState(paths[0] ?? "");
-  const [b, setB] = useState("");
+  const [runA, setA] = useState(paths[0] ?? "");
+  const [runB, setB] = useState("");
+  // By scheme: A is the scheme's CSS run, B its X3Z3 run (the newest of each, as paths are newest first)
+  const [byScheme, setByScheme] = useState(false);
+  const schemes = [...new Set(paths.map(p => surf[p].settings.scheme))];
+  const [scheme, setScheme] = useState(schemes[0] ?? "");
+  const pickedScheme = schemes.includes(scheme) ? scheme : schemes[0];
+  const runOf = (code: string) => paths.find(p => surf[p].settings.scheme === pickedScheme && codeOf(p) === code) ?? "";
+  const [a, b] = byScheme ? [runOf("css"), runOf("x3z3")] : [runA, runB];
   const picked = ([["A", a], ["B", b]] as [Key, string][]).filter(([, p]) => surf[p]);
   const options = paths.map(p => <option key={p} value={p}>{runLabel(p)}</option>);
   const none = !paths.length && (
@@ -75,15 +85,31 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
       <h2>Threshold surface (p<sub>G</sub>, p<sub>T</sub>, p<sub>R</sub>)</h2>
       <div className="controls">
         <div className="field">
-          <label htmlFor="selA"><span className="swatch" style={{ background: "var(--series-a)" }} />Run A</label>
-          <select id="selA" value={a} onChange={e => setA(e.target.value)}>{options}</select>
+          <span className="lbl">Pick</span>
+          <label>
+            <input type="checkbox" checked={byScheme} onChange={e => setByScheme(e.target.checked)} />{" "}
+            by scheme: CSS as A, X³Z³ as B
+          </label>
         </div>
-        <div className="field">
-          <label htmlFor="selB"><span className="swatch" style={{ background: "var(--series-b)" }} />Run B (compare)</label>
-          <select id="selB" value={b} onChange={e => setB(e.target.value)}>
-            <option value="">— none —</option>{options}
-          </select>
-        </div>
+        {byScheme ? (
+          <div className="field">
+            <label htmlFor="selScheme">Scheme</label>
+            <select id="selScheme" value={pickedScheme} onChange={e => setScheme(e.target.value)}>
+              {schemes.map(s => <option key={s} value={s}>{schemeName(s)}</option>)}
+            </select>
+          </div>
+        ) : (<>
+          <div className="field">
+            <label htmlFor="selA"><span className="swatch" style={{ background: "var(--series-a)" }} />Run A</label>
+            <select id="selA" value={runA} onChange={e => setA(e.target.value)}>{options}</select>
+          </div>
+          <div className="field">
+            <label htmlFor="selB"><span className="swatch" style={{ background: "var(--series-b)" }} />Run B (compare)</label>
+            <select id="selB" value={runB} onChange={e => setB(e.target.value)}>
+              <option value="">— none —</option>{options}
+            </select>
+          </div>
+        </>)}
       </div>
       <div className="row"><div>
       <Plot tall msg={none}
@@ -100,6 +126,13 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
         and readout error at threshold. Each run, surface and dots, is shaded by its length p<sub>th</sub>:
         run A copper (as in arXiv:2306.17786 and thresholds.py), run B black to its series colour (diamonds). The bars on the p<sub>G</sub> and p<sub>T</sub> axes span the
         thresholds of the bias sweep on the right.
+      </p>
+      <p className="note">
+        Volume under surface: the region between the origin and the surface, in %³, summed as one tetrahedron per
+        grid triangle with the origin. Larger means more combinations of gate, idling and readout error stay below
+        threshold. "vs flat triangle" divides it by the tetrahedron of the surface's own three axis points
+        (p<sub>G</sub> p<sub>T</sub> p<sub>R</sub> / 6): above 1 the surface bulges outward, so mixed noise is
+        tolerated better than the axis thresholds alone suggest.
       </p>
       </div><div>
       <Plot tall msg={none && "Threshold vs bias appears with the first threshold run."}
@@ -118,16 +151,19 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
       <div className="scroll"><table><tbody>
         <tr><th>Run</th><th>Scheme</th><th>d</th><th>Decoder</th><th>η<sub>G</sub></th><th>η<sub>T</sub></th>
           <th>p<sub>G</sub><sup>th</sup></th><th>p<sub>T</sub><sup>th</sup></th><th>p<sub>R</sub><sup>th</sup></th>
-          <th>Directions with a crossing</th></tr>
+          <th>Directions with a crossing</th>
+          <th>Volume under surface (%³)</th><th>vs flat triangle</th></tr>
         {picked.map(([k, p]) => {
-          const d = surf[p], s = d.settings;
+          const d = surf[p], s = d.settings, v = surfVolume(d);
           return (
             <tr key={k}>
-              <td>{k}</td><td>{schemeName(s.scheme)}</td>
-              <td className="num">{s.distances.join(", ")}</td><td>{s.decoder}</td>
+              <td>{k}</td><td>{schemeName(s.scheme)}{codeOf(p) === "x3z3" ? " · X³Z³" : " · CSS"}</td>
+              <td className="num">{s.distances.map(dLabel).join(", ")}</td><td>{s.decoder}</td>
               <td className="num">{s.eta_g}</td><td className="num">{s.eta_t}</td>
               {d.axes.map((v, i) => <td key={i} className="num">{pct(v)}</td>)}
               <td className="num">{d.surface.filter(r => r.p_th > 0).length} / {d.surface.length}</td>
+              <td className="num">{v ? v.volume.toFixed(4) + (v.missing ? ` (${v.missing}/${v.total} triangles missing)` : "") : "—"}</td>
+              <td className="num">{v?.flat ? `× ${v.flat.toFixed(2)}` : "—"}</td>
             </tr>
           );
         })}
