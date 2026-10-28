@@ -8,9 +8,20 @@ type Key = "A" | "B";
 // thresholds.py writes .../thresholds/<code>/...; older summaries have no code column
 const codeOf = (path: string) => (path.includes("/x3z3/") || /(^|\/)x3z3_/.test(path) ? "x3z3" : "css");
 
+/** The eighth of the sphere of radius `r` in the octant, as points: `alphahull: 0` hulls them into the solid,
+ *  with the origin closing its three flat faces on the coordinate planes. */
+function octantPoints(r: number, n = 16): [number, number, number][] {
+  const pts: [number, number, number][] = [[0, 0, 0]];
+  for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) {
+    const th = (Math.PI / 2 * i) / n, ph = (Math.PI / 2 * j) / n;
+    pts.push([r * Math.cos(th) * Math.cos(ph), r * Math.cos(th) * Math.sin(ph), r * Math.sin(th)]);
+  }
+  return pts;
+}
+
 /** Each run's surface and dots shaded by p_th (A copper, B black to its series colour, each with its colourbar),
  * plus the bias-sweep ranges as bars on the p_G and p_T axes. */
-function surfaceTraces(path: string, d: ThresholdRun, key: Key): Trace[] {
+function surfaceTraces(path: string, d: ThresholdRun, key: Key, spheres: boolean): Trace[] {
   const pts = surfPoints(d), isA = key === "A";
   const scale = isA ? COPPER : [[0, "rgb(0,0,0)"], [1, css("--series-b")]];
   const P = (k: "x" | "y" | "z" | "p") => pts.map(q => q[k]);
@@ -31,6 +42,17 @@ function surfaceTraces(path: string, d: ThresholdRun, key: Key): Trace[] {
     hovertemplate: "p_G %{x:.3f} %<br>p_T %{y:.3f} %<br>p_R %{z:.3f} %<br>" +
                    `p_th %{customdata[0]:.3f} ± %{customdata[1]:.3f} %<extra>${runLabel(path)}</extra>`,
   });
+  // the isotropic octant the surface is contained in: the sphere through its largest p_th
+  const v = spheres ? surfVolume(d) : null;
+  if (v?.radius) {
+    const ball = octantPoints(v.radius);
+    out.push({
+      type: "mesh3d", x: ball.map(q => q[0]), y: ball.map(q => q[1]), z: ball.map(q => q[2]),
+      alphahull: 0, color: css(isA ? "--series-a" : "--series-b"), opacity: 0.15, flatshading: true,
+      lighting: { ambient: 0.9, diffuse: 0.2, specular: 0 }, hoverinfo: "skip",
+      name: `sphere · ${key} (r ${v.radius.toFixed(3)} %, ${v.sphere.toFixed(4)} %³)`,
+    });
+  }
   // like the arrows of IBM's panel (b)
   for (const [rows, along, color] of [[d.g_bias, "x", G_COLOR], [d.t_bias, "y", T_COLOR]] as const) {
     const ps = rows.filter(r => r.p_th > 0).map(r => PCT * r.p_th);
@@ -68,6 +90,11 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
   const [runB, setB] = useState("");
   // By scheme: A is the scheme's CSS run, B its X3Z3 run (the newest of each, as paths are newest first)
   const [byScheme, setByScheme] = useState(false);
+  // the isotropic sphere octants, to see the measured volume against them
+  const [spheres, setSpheres] = useState(false);
+  // equal scale: one % the same length on every axis, so the sphere octant is round; off stretches the box
+  // to a cube, which fills the frame but distorts shapes when the axes' ranges differ
+  const [equalScale, setEqualScale] = useState(true);
   const schemes = [...new Set(paths.map(p => surf[p].settings.scheme))];
   const [scheme, setScheme] = useState(schemes[0] ?? "");
   const pickedScheme = schemes.includes(scheme) ? scheme : schemes[0];
@@ -89,6 +116,17 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
           <label>
             <input type="checkbox" checked={byScheme} onChange={e => setByScheme(e.target.checked)} />{" "}
             by scheme: CSS as A, X³Z³ as B
+          </label>
+        </div>
+        <div className="field">
+          <span className="lbl">Show</span>
+          <label>
+            <input type="checkbox" checked={spheres} onChange={e => setSpheres(e.target.checked)} />{" "}
+            sphere octant through the largest p<sub>th</sub>
+          </label>
+          <label>
+            <input type="checkbox" checked={equalScale} onChange={e => setEqualScale(e.target.checked)} />{" "}
+            equal scale on all three axes
           </label>
         </div>
         {byScheme ? (
@@ -113,13 +151,13 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
       </div>
       <div className="row"><div>
       <Plot tall msg={none}
-        data={picked.length ? picked.flatMap(([k, p]) => surfaceTraces(p, surf[p], k)) : EMPTY_3D}
+        data={picked.length ? picked.flatMap(([k, p]) => surfaceTraces(p, surf[p], k, spheres)) : EMPTY_3D}
         layout={{ ...baseLayout(), margin: { l: 0, r: 0, t: 0, b: 0 },
           legend: { ...baseLayout().legend, x: 0, y: 1 },
           scene: { xaxis: axis("p_G gate (%)", { rangemode: "tozero" }),
                    yaxis: axis("p_T idling (%)", { rangemode: "tozero" }),
                    zaxis: axis("p_R readout (%)", { rangemode: "tozero" }),
-                   bgcolor: "rgba(0,0,0,0)", aspectmode: "cube",
+                   bgcolor: "rgba(0,0,0,0)", aspectmode: equalScale ? "data" : "cube",
                    camera: { eye: { x: 1.6, y: 1.6, z: 1.0 } } } }} />
       <p className="note">
         Each dot is one direction's crossing point p<sub>th</sub>·(cos θ cos φ, cos θ sin φ, sin θ): gate, idling
@@ -130,9 +168,12 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
       <p className="note">
         Volume under surface: the region between the origin and the surface, in %³, summed as one tetrahedron per
         grid triangle with the origin. Larger means more combinations of gate, idling and readout error stay below
-        threshold. "vs flat triangle" divides it by the tetrahedron of the surface's own three axis points
-        (p<sub>G</sub> p<sub>T</sub> p<sub>R</sub> / 6): above 1 the surface bulges outward, so mixed noise is
-        tolerated better than the axis thresholds alone suggest.
+        threshold. Tick "sphere octant" above to draw the isotropic volume it sits inside: the octant of the
+        sphere through the largest p<sub>th</sub> (π r³ / 6), what the volume would be if every direction
+        tolerated as much as the best one. Measured / flat compares it instead to the
+        tetrahedron of the surface's own three axis points (p<sub>G</sub> p<sub>T</sub> p<sub>R</sub> / 6):
+        above 1 the surface bulges outward, so mixed noise is tolerated better than the axis thresholds alone
+        suggest.
       </p>
       </div><div>
       <Plot tall msg={none && "Threshold vs bias appears with the first threshold run."}
@@ -152,7 +193,8 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
         <tr><th>Run</th><th>Scheme</th><th>d</th><th>Decoder</th><th>η<sub>G</sub></th><th>η<sub>T</sub></th>
           <th>p<sub>G</sub><sup>th</sup></th><th>p<sub>T</sub><sup>th</sup></th><th>p<sub>R</sub><sup>th</sup></th>
           <th>Directions with a crossing</th>
-          <th>Volume under surface (%³)</th><th>vs flat triangle</th></tr>
+          <th>Volume under surface (%³)</th><th>Sphere octant (%³)</th>
+          <th>Measured / flat</th></tr>
         {picked.map(([k, p]) => {
           const d = surf[p], s = d.settings, v = surfVolume(d);
           return (
@@ -163,6 +205,7 @@ export function SurfaceSection({ surf }: { surf: Record<string, ThresholdRun> })
               {d.axes.map((v, i) => <td key={i} className="num">{pct(v)}</td>)}
               <td className="num">{d.surface.filter(r => r.p_th > 0).length} / {d.surface.length}</td>
               <td className="num">{v ? v.volume.toFixed(4) + (v.missing ? ` (${v.missing}/${v.total} triangles missing)` : "") : "—"}</td>
+              <td className="num">{v?.sphere ? v.sphere.toFixed(4) : "—"}</td>
               <td className="num">{v?.flat ? `× ${v.flat.toFixed(2)}` : "—"}</td>
             </tr>
           );

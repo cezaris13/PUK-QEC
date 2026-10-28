@@ -190,7 +190,8 @@ export const pct = (v: number) => (v * PCT).toFixed(3) + " %";
  *  in (s, t) order, so neighbours form triangles, and each with the origin is a tetrahedron |a·(b×c)| / 6.
  *  `corners` are the surface's own (p_G, p_T, p_R) axis points; `flat` the volume / G T R / 6 of the corner
  *  tetrahedron, 1 when the surface is the flat triangle through them. Triangles with a direction that found no
- *  crossing are left out and counted in `missing`. */
+ *  crossing are left out and counted in `missing`. `sphere` is the octant of the sphere through the largest
+ *  p_th (pi r^3 / 6), the isotropic volume the surface is contained in. */
 export function surfVolume(d: ThresholdRun) {
   const rows = d.surface, N = rows.length, n = Math.round((Math.sqrt(8 * N + 1) - 1) / 2);
   if (!N || (n * (n + 1)) / 2 !== N) return null;
@@ -215,5 +216,7 @@ export function surfVolume(d: ThresholdRun) {
   }
   const corners = [at(0, 0), at(n - 1, 0), at(0, n - 1)].map(k => PCT * rows[k].p_th);  // G, T, R
   const box = corners[0] * corners[1] * corners[2] / 6;
-  return { volume, corners, flat: box > 0 ? volume / box : null, missing, total };
+  const radius = Math.max(0, ...rows.filter(r => r.p_th > 0).map(r => PCT * r.p_th));
+  return { volume, corners, box, flat: box > 0 ? volume / box : null, missing, total,
+           radius, sphere: (Math.PI * radius ** 3) / 6 };
 }
